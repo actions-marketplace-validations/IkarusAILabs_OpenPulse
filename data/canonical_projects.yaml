@@ -139,6 +139,19 @@
     maintainer: choksi2212
     confidence: high
     note: "OpenTofu (ghcr.io/opentofu/opentofu) is a fork with its own version line that numerically collides with Terraform core versions; it must never inherit a terraform EOL"
+- slug: opentofu
+  display_name: OpenTofu
+  github: opentofu/opentofu
+  website: https://opentofu.org
+  aliases: [opentofu, opentofu/opentofu, ghcr.io/opentofu/opentofu]
+  docker_images: [ghcr.io/opentofu/opentofu]
+  identity:
+    status: VERIFIED
+    source: "opentofu/opentofu is the Linux Foundation fork of Terraform maintained as its own project at opentofu.org, publishing ghcr.io/opentofu/opentofu"
+    reviewed_at: "2026-10-29"
+    maintainer: IkarusAILabs
+    confidence: high
+    note: "fork of terraform with its own release line; distinct from the terraform slug. Curated so that an identity-based exclusion from terraform events rests on a mapping, not on an unmapped self-resolution (TR-2026-01 D10)"
 - slug: mysql
   display_name: MySQL
   github: mysql/mysql-server
@@ -274,6 +287,32 @@
   website: https://coredns.io
   aliases: [coredns, core-dns]
   docker_images: []
+- slug: boto3
+  display_name: boto3 (AWS SDK for Python)
+  github: boto/boto3
+  website: https://aws.amazon.com/sdk-for-python/
+  aliases: [boto3]
+  docker_images: []
+  identity:
+    status: VERIFIED
+    source: "boto/boto3 publishes the boto3 package on PyPI"
+    reviewed_at: "2026-10-29"
+    maintainer: IkarusAILabs
+    confidence: high
+    note: "curated so that boto3 resolves to a project rather than to itself (TR-2026-01 D13)"
+- slug: serde
+  display_name: Serde
+  github: serde-rs/serde
+  website: https://serde.rs
+  aliases: [serde]
+  docker_images: []
+  identity:
+    status: VERIFIED
+    source: "serde-rs/serde publishes the serde crate on crates.io"
+    reviewed_at: "2026-10-29"
+    maintainer: IkarusAILabs
+    confidence: high
+    note: "curated so that serde resolves to a project rather than to itself (TR-2026-01 D13)"
 - slug: valkey
   display_name: Valkey
   github: valkey-io/valkey

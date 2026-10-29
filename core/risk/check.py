@@ -9,12 +9,16 @@ combines them only at the final verdict, retaining each cause.
 Decision matrix (final relationship):
   AFFECTS_ARTIFACT > AFFECTS_VERSION > AFFECTS_PACKAGE
   > NOT_AFFECTED > RELATED > AFFECTS_PROJECT > UNKNOWN
+except that a clearance from one event never outranks an unresolved
+association (RELATED / AFFECTS_PROJECT) from another
+(``winning_cause``).
 `affected` is True only for ARTIFACT/VERSION/PACKAGE. A project-only
 tie (AFFECTS_PROJECT) is contextual, never impact. Pure functions.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -38,6 +42,10 @@ _RANK = {
 }
 
 _AFFECTED = ("AFFECTS_ARTIFACT", "AFFECTS_VERSION", "AFFECTS_PACKAGE")
+
+#: Associations that are neither impact nor clearance: while any cause
+#: holds one, a NOT_AFFECTED from another event cannot headline.
+_UNRESOLVED = ("RELATED", "AFFECTS_PROJECT")
 
 #: Match strength answers "what matches" — never "how trustworthy is
 #: the underlying claim". The ceiling below is what a match *alone*
@@ -159,10 +167,61 @@ def _dep_label(dep: dict[str, Any]) -> str:
 
 
 def _event_scope_cause(dep: dict[str, Any], event: OSSEvent) -> dict[str, Any] | None:
-    """Package dep vs one event's scope. None when the event says nothing usable."""
+    """Package dep vs one event's scope. None when the event says nothing usable.
+
+    A negative stands only against a declared-complete scope; outside
+    a partial or unspecified one the cause is RELATED (see ``_exclusion``).
+    """
+    cause = _scope_cause(dep, event)
+    if cause is None or cause["relationship"] != "NOT_AFFECTED":
+        return cause
+    if event.scope is not None and event.scope.admits_negative():
+        return cause
+    why = (
+        "scope completeness has no recorded basis"
+        if event.scope is not None and event.scope.exhaustive
+        else "scope is not exhaustive"
+    )
+    return {
+        **cause,
+        "relationship": "RELATED",
+        "match_method": "project_scope",
+        "reason": f"{cause['reason']}; {why}, so not a clearance",
+    }
+
+
+def _scope_cause(dep: dict[str, Any], event: OSSEvent) -> dict[str, Any] | None:
     slug = resolve_project(str(dep["package"]))
     if slug != event.project_slug:
-        return None
+        trust = resolution_trust(str(dep["package"]))
+        if trust["via"] != "self":
+            return None  # curated as another project: no association
+        if event.scope is not None and event.scope.kind in ("artifact", "registry"):
+            # Container-image and registry scopes name locations a package
+            # reference never is: no association, whatever its identity.
+            return None
+        # An unmapped package resolves only to itself. That is not
+        # evidence of another project, so against the project, its
+        # release lines or its packages the association is undetermined,
+        # never dropped (TR-2026-01 D13; D10 for images).
+        return {
+            "cause": "upstream_change",
+            "event_id": event.id,
+            "event_type": event.event_type.value,
+            "project": event.project_slug,
+            "impact": event.impact.value,
+            "evidence": [e.source.name for e in event.evidences],
+            "evidence_confidence": event.confidence.value,
+            "identity_status": trust["identity_status"],
+            "identity_via": trust["via"],
+            "relationship": "RELATED",
+            "affected": False,
+            "match_method": "project_scope",
+            "reason": (
+                f"{dep['package']} resolves only to itself; identity unresolved, so it is "
+                f"neither excluded from nor unrelated to project {event.project_slug}"
+            ),
+        }
     trust = resolution_trust(str(dep["package"]))
     scope = event.scope
     version = dep.get("version")
@@ -237,12 +296,19 @@ def _event_scope_cause(dep: dict[str, Any], event: OSSEvent) -> dict[str, Any] |
                 "match_method": "event_scope_package",
                 "reason": f"{dep['package']} is inside event scope packages {scope.packages}",
             }
+        # Package names are not canonicalised per ecosystem (PEP 503
+        # folding, Maven group:artifact, npm scopes...), so a name that
+        # differs from every listed one may still be the same package:
+        # inequality is undetermined, never an exclusion.
         return {
             **base,
-            "relationship": "NOT_AFFECTED",
+            "relationship": "RELATED",
             "affected": False,
             "match_method": "event_scope_package",
-            "reason": f"{dep['package']} is outside event scope packages {scope.packages}",
+            "reason": (
+                f"{dep['package']} is not listed in event scope packages {scope.packages}; "
+                "package names are not canonicalised, so not a clearance"
+            ),
         }
     if kind == "artifact":
         return {
@@ -306,6 +372,25 @@ def _security_causes(dep: dict[str, Any], bundles: dict[str, dict[str, Any]]) ->
     return causes
 
 
+def winning_cause(causes: list[Cause]) -> Cause:
+    """The cause that headlines a verdict (non-empty ``causes``).
+
+    The highest-ranked cause, except that a clearance never outranks
+    an unresolved association from another event: when any cause is
+    RELATED or AFFECTS_PROJECT, NOT_AFFECTED cannot headline. UNKNOWN
+    causes ("matches nothing in this event") assert no association and
+    do not block a clearance. Per-cause verdicts stay retained either
+    way, and ``affected`` is unchanged -- neither side is affected.
+    """
+    top = max(causes, key=lambda c: _RANK.get(str(c.get("relationship", "")), 0))
+    if str(top.get("relationship")) != "NOT_AFFECTED":
+        return top
+    unresolved = [c for c in causes if str(c.get("relationship")) in _UNRESOLVED]
+    if not unresolved:
+        return top
+    return max(unresolved, key=lambda c: _RANK.get(str(c.get("relationship", "")), 0))
+
+
 def _combine(dep: dict[str, Any], causes: list[Cause]) -> DependencyVerdict:
     """Explicit decision matrix over retained causes.
 
@@ -332,7 +417,7 @@ def _combine(dep: dict[str, Any], causes: list[Cause]) -> DependencyVerdict:
         cause.setdefault("detail", cause.get("reason", ""))
         cause.setdefault("evidence_confidence", "UNVERIFIED")
         cause.setdefault("identity_status", "VERIFIED")
-    top = max(causes, key=lambda c: _RANK.get(str(c["relationship"]), 0))
+    top = winning_cause(causes)
     relationship = str(top["relationship"])
     affected = relationship in _AFFECTED
     match_strength = _MATCH_STRENGTH.get(relationship, "none")
@@ -413,6 +498,7 @@ def fail_on_threshold(results: list[DependencyVerdict], threshold: str) -> bool:
         for result in results
     )
 
+
 def strict_affected(results: list[DependencyVerdict]) -> bool:
     """Whether --strict should fail: an affected verdict carried by an
     ACTION-level cause. REVIEW/WATCH-level affected verdicts (e.g. weak
@@ -429,18 +515,74 @@ def strict_affected(results: list[DependencyVerdict]) -> bool:
 Verdict = DependencyVerdict
 
 
+def inadmissible_reason(
+    event: OSSEvent,
+    as_of: datetime | None = None,
+    max_evidence_age: timedelta | None = None,
+) -> str | None:
+    """Why ``event`` may not support a negative, or None if it may.
+
+    Layer 1 of the applicability policy (TR-2026-01 N4, N5): an event
+    whose extent is contested by its own evidence, or whose newest
+    evidence is older than the caller's freshness bound, can still
+    associate a dependency but never clear one. Withdrawn and
+    superseded events are dropped before evaluation (``check_dependency``).
+    The freshness bound is opt-in: replaying recorded evidence offline
+    would otherwise make every negative stale.
+    """
+    if any(e.relation == "contradicts" for e in event.evidences):
+        return "the event's extent is contested by contradicting evidence"
+    if as_of is not None and max_evidence_age is not None:
+        newest = max(e.source.fetched_at for e in event.evidences)
+        if newest.tzinfo is None:
+            newest = newest.replace(tzinfo=timezone.utc)
+        if as_of - newest > max_evidence_age:
+            return (
+                f"newest evidence was fetched {newest.date()}, older than the "
+                f"{max_evidence_age.days}-day freshness bound (stale)"
+            )
+    return None
+
+
+def _admit(
+    cause: Cause, event: OSSEvent, as_of: datetime | None, max_age: timedelta | None
+) -> Cause:
+    """Turn a negative from an inadmissible event into RELATED."""
+    if cause.get("relationship") != "NOT_AFFECTED":
+        return cause
+    why = inadmissible_reason(event, as_of, max_age)
+    if why is None:
+        return cause
+    return {
+        **cause,
+        "relationship": "RELATED",
+        "reason": f"{cause['reason']}; {why}, so not a clearance",
+    }
+
+
 def check_dependency(
-    dep: dict[str, Any], events: list[OSSEvent], bundles: dict[str, dict[str, Any]] | None = None
+    dep: dict[str, Any],
+    events: list[OSSEvent],
+    bundles: dict[str, dict[str, Any]] | None = None,
+    *,
+    as_of: datetime | None = None,
+    max_evidence_age: timedelta | None = None,
 ) -> DependencyVerdict:
-    """One dep vs events (+ optional raw bundles) -> explicit verdict."""
+    """One dep vs events (+ optional raw bundles) -> explicit verdict.
+
+    Withdrawn and superseded events are not evaluated. With ``as_of``
+    and ``max_evidence_age`` both given, a negative from an event whose
+    newest evidence is older than the bound becomes RELATED (stale).
+    """
     bundles = bundles or {}
+    events = [event for event in events if event.is_current_record()]
     causes: list[Cause] = []
     if dep["kind"] == "image":
         trust = resolution_trust(str(dep["ref"]))
         for event in events:
             match = event_affects_ref(event, dep["ref"])
             exact = match["via"] == "artifact"
-            causes.append(
+            cause = _admit(
                 {
                     "cause": "upstream_change",
                     "relationship": match["relationship"],
@@ -460,13 +602,17 @@ def check_dependency(
                     "identity_status": "VERIFIED" if exact else trust["identity_status"],
                     "identity_via": "exact-artifact" if exact else trust["via"],
                     "reason": str(match["detail"]),
-                }
+                },
+                event,
+                as_of,
+                max_evidence_age,
             )
+            causes.append(cause)
     else:
         for event in events:
             cause = _event_scope_cause(dep, event)
             if cause is not None:
-                causes.append(cause)
+                causes.append(_admit(cause, event, as_of, max_evidence_age))
         causes.extend(_security_causes(dep, bundles))
     return _combine(dep, causes)
 
@@ -475,9 +621,15 @@ def check_watchlist(
     deps: list[dict[str, Any]],
     events: list[OSSEvent],
     bundles: dict[str, dict[str, Any]] | None = None,
+    *,
+    as_of: datetime | None = None,
+    max_evidence_age: timedelta | None = None,
 ) -> list[DependencyVerdict]:
     """Whole watchlist -> one verdict per dependency."""
-    return [check_dependency(dep, events, bundles) for dep in deps]
+    return [
+        check_dependency(dep, events, bundles, as_of=as_of, max_evidence_age=max_evidence_age)
+        for dep in deps
+    ]
 
 
 #: Durable lifecycle fact types: one set, owned by the ledger (the

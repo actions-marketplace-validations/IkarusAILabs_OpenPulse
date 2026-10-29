@@ -10,7 +10,7 @@
 
 Use this framing without claiming that the combined model is already proven. The combined assurance experiment is hypothesised, not established.
 
-Status (2026-10-25): v0.6.3 released; on `main` since then: wheel data packaging (#132), release-line scope fix (#133), MCP server for AI coding agents, DefectDojo export and Dependency-Track upload (#134–#136, landed via the recovery PR); Phase A correctness and leak fixes merged (#112, #113, #115–#120); intelligence schema 0.5.0, evidence contract v1.1, CI on Linux + Windows, deterministic SBOM archived. Test count is reported by CI. Next phases: `docs/NEXT_PHASES.md`. This reset supersedes the 2026-10-02 M1–M8 sequence: the milestones below re-baseline it against implementation reality and the research programme, they do not discard it.
+Status (2026-10-28): v0.7.0 "Channels" released (MCP server for AI coding agents, DefectDojo export, Dependency-Track upload, release-line verdict fix #133, install name `ikarus-openpulse`); v0.7.1 adds collector response caps (#155) and hash-locked installs (#156); Phase A correctness and leak fixes merged (#112, #113, #115–#120); intelligence schema 0.5.0, evidence contract v1.1, CI on Linux + Windows, deterministic SBOM archived. Test count is reported by CI. Next phases: `docs/NEXT_PHASES.md`. This reset supersedes the 2026-10-02 M1–M8 sequence: the milestones below re-baseline it against implementation reality and the research programme, they do not discard it.
 
 Status words used in this document: DONE, ACTIVE, VALIDATION, NEXT, FUTURE, RESEARCH. Research claims are additionally qualified as observed, implemented, validated, hypothesised, or planned — hypotheses are never described as established capabilities.
 
@@ -102,7 +102,7 @@ The evidence foundation. Existing architecture is strong; do not expand it witho
 - identity trust (VERIFIED / REVIEW_REQUIRED / UNVERIFIED)
 - version applicability, explicit NOT_AFFECTED
 - confidence model with match strength vs evidence strength separated
-- registry observations, corruption-detecting (unkeyed hash-chained) observation history - keyed integrity and rollback detection are the v0.7.0 "Anchored Trust" work, the one M1 expansion with a concrete requirement (lead-time claims rest on this history)
+- registry observations, corruption-detecting (unkeyed hash-chained) observation history - keyed integrity and rollback detection are the v0.8.0 "Anchored Trust" work, the one M1 expansion with a concrete requirement (lead-time claims rest on this history)
 - first-detection semantics, deterministic reports
 - security hardening (SSRF policy, redaction, lock-drift check, secret tripwire)
 
@@ -201,6 +201,18 @@ Banned as primary success metrics: projects monitored, collectors, findings, lif
 
 Every major milestone produces at least one of: benchmark, dataset, schema, evidence contract, case study, reproducibility package, technical report, academic paper, reference implementation. This is what makes OpenPulse a research instrument, not a prototype.
 
+## External developments review (2026-10-28)
+
+Checked against recent research and open-source tools. Items are adopted only where they strengthen an existing layer; nothing here reopens the rejected list (EOL database, generic SCA, collector count, opaque scores, AI in the trusted path).
+
+- [NEXT, after v0.7.0] **E1 — External applicability evidence (VEX) input** (layer 4). Consume OpenVEX and CycloneDX VEX statements, and the output of ecosystem reachability tools such as `govulncheck`, as a separately labelled evidence class. Such evidence may support NOT_AFFECTED only with its provenance attached; its absence leaves the verdict as it was. OpenPulse runs no call-graph or reachability analysis of its own. Why: [Ourari, ICSME 2026](https://arxiv.org/abs/2609.08810) names "is the vulnerability actually exploitable?" as a key measurement gap. Accepting other tools' evidence closes part of it without building an SCA engine.
+- [NEXT] **E2 — Dependency-path context from SBOM graphs** (layer 8). When an SBOM declares its dependency graph (CycloneDX `dependencies`, SPDX relationships), record whether the affected component is direct or transitive, and the path to it. Never infer a graph the input does not state. Why: the same agenda identifies transitive modelling as a weakness; the path is context for the warning, not a new verdict.
+- [NEXT, M8] **E3 — "Not found in registry" ≠ "not catalogued"** (layer 3, MCP channel). `dependency_status` distinguishes a package or version that does not exist in its registry from one OpenPulse has no intelligence on. Coding agents propose non-existent versions often enough to matter (secondary reporting of an Endor Labs study), and a non-existent package is an identity fact, not an UNKNOWN. No malicious-package scoring: that belongs to tools such as OpenSSF Package Analysis and GuardDog.
+- [RESEARCH, M9] **E4 — Dependency-decision experiment design** (layer 9/10). Arms: agent alone; agent plus conventional vulnerability scanning (OSV-Scanner); agent plus OpenPulse; agent plus SafeAI authority evidence, only where the candidate is itself an AI component (MCP server, agent framework); combined. Score against what happened after the decision date (later advisories, deprecation, archival, end of life), using retrospective evidence snapshots, with model training cut-offs recorded to control leakage. Also measure unnecessary additions, reuse of existing dependencies, policy compliance and functional success, so that blocking useful changes counts against a condition. Align the task format with [DepDec-Bench](https://arxiv.org/abs/2601.00205) once it is released (no public code or dataset as of 2026-10-28; paper under review at JAWS 2026).
+- [VALIDATION, M4] **E5 — Comparator runs on the benchmark.** Run xeol, OSV-Scanner and plain endoflife.date lookups on the 11 formalized scenarios. Report where their verdicts differ from OpenPulse's on identity and applicability (false-impact, false-clear, unknown), not on feed coverage.
+
+Considered and not adopted: dependency-discovery benchmarking (inventory generation is Syft's and the SBOM producer's job; OpenPulse consumes inventories); vulnerability-feed accuracy and freshness as a product metric (a property of OSV and NVD, not a differentiator — temporal coverage stays the P0 audit item); a reachability or call-graph engine (generic SCA); malicious-package detection.
+
 ## Item dispositions (reconciled 2026-10-04)
 
 - DONE → M1 maintenance: schema, gate, identity trust, match/evidence split, hash-chained observations, lead-time semantics, Windows CI, SBOM archiving, metadata sidecar.
@@ -214,12 +226,12 @@ Every major milestone produces at least one of: benchmark, dataset, schema, evid
 - OBSOLETE as product scope: generic SCA matching, auto-remediation, dashboard complexity, AI-generated conclusions.
 - DONE 2026-10-19: repository coverage assurance (v0.6.0, #100) - blob-SHA-pinned GitHub inspection with COMPLETE/PARTIAL/FAILED coverage, evidence contract v1.1.
 - DONE 2026-10-21: v0.6.1 correctness slice - namespaced pom.xml (#112), registry-port identity (#113), webhook secret redaction (#115), OS advisory locks (#116), GitHub-repo SBOM ingestion (#117), bounded reads (#118), identifier validation (#119), `SECURITY.md` (#120), certifi PYSEC-2026-4320.
-- NEXT (reconciled 2026-10-21 security architecture review): collector response caps (A6b), then v0.7.0 Anchored Trust before M6 runs unattended - see `docs/NEXT_PHASES.md`.
+- DONE 2026-10-28: collector response caps (A6b, #155) and hash-locked installs (#110, #156). NEXT: v0.8.0 Anchored Trust before M6 runs unattended - see `docs/NEXT_PHASES.md`.
 
 ## Next 90 Days (reconciled 2026-10-21)
 
-1. ~~v0.6.1 correctness/leak fixes~~ DONE 2026-10-21 — remaining: collector response caps (A6b) and tagging the v0.6.1 release.
-2. v0.7.0 Anchored Trust (M1 requirement, not expansion) — derived source authority, derived independence, keyed history integrity with rollback detection and external anchoring, portable (JCS) contract hashing. Lead-time claims cite keyed-valid detections only.
+1. ~~v0.6.1 correctness/leak fixes~~ DONE 2026-10-21; ~~collector response caps (A6b)~~ DONE in v0.7.1.
+2. v0.8.0 Anchored Trust (M1 requirement, not expansion) — derived source authority, derived independence, keyed history integrity with rollback detection and external anchoring, portable (JCS) contract hashing. Lead-time claims cite keyed-valid detections only.
 3. Early-warning operationalization (M6) — persistent delivery state, deterministic deduplication/retry policy, DNS-pinned webhook transport, CI/PR integration. Builds on item 2.
 4. Real non-lifecycle discovery (M2) — a live namespace-move pair for `split_moves`; repository/archive and support/license candidates per the backlog.
 5. Benchmark harness (M4) and release supply chain — per-scenario reproducibility package; hash-pinned lock, signed releases with provenance.

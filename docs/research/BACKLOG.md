@@ -13,9 +13,9 @@ Purpose: the trust model is the product; regressions here invalidate everything 
 - [NEXT] OSV/CVE/NVD published-date coverage audit: which findings still lack `announced_at`, and whether any authoritative source is untapped. Purpose: temporal accuracy (roadmap metric).
 - [NEXT] `first_seen` backfill policy for lifecycle findings predating the ledger: document whether (and how) historical first detection may ever be reconstructed — default stays "unknown means unknown". Purpose: protect the no-estimation rule.
 - [DEFERRED] Confidence calibration study (do CORROBORATED findings verify at the claimed rate?). Purpose: methodology stability before any metric is marketed. Deferred until M4 measurements exist.
-- [NEXT, v0.7.0] Derived source authority (M1): `official` only when an https URL's host is on the project's `official_domains` allowlist; `Source.authority` becomes a fail-closed Literal. Purpose: a caller-supplied string must never reach CONFIRMED.
-- [NEXT, v0.7.0] Derived independence (M2): source family from the URL's registrable domain when `family` is absent. Purpose: two names for one origin never make CORROBORATED.
-- [NEXT, v0.7.0] Keyed history integrity (H2): HMAC over chain fields and ledger entries with a key outside `.openpulse/`, `first_detected_at` chained, missing tip = ROLLBACK_SUSPECTED, external anchor checkpoints. Purpose: lead time - the headline metric - must rest on a history an attacker cannot silently rewrite.
+- [NEXT, v0.8.0] Derived source authority (M1): `official` only when an https URL's host is on the project's `official_domains` allowlist; `Source.authority` becomes a fail-closed Literal. Purpose: a caller-supplied string must never reach CONFIRMED.
+- [NEXT, v0.8.0] Derived independence (M2): source family from the URL's registrable domain when `family` is absent. Purpose: two names for one origin never make CORROBORATED.
+- [NEXT, v0.8.0] Keyed history integrity (H2): HMAC over chain fields and ledger entries with a key outside `.openpulse/`, `first_detected_at` chained, missing tip = ROLLBACK_SUSPECTED, external anchor checkpoints. Purpose: lead time - the headline metric - must rest on a history an attacker cannot silently rewrite.
 
 ## P1 — Real Upstream Change Discovery
 
@@ -39,7 +39,7 @@ Purpose: turn public intelligence into customer answers without building generic
 - [DONE 2026-10-19] GitHub-repository ingestion (`core/github_reader.py`, `--github-repo`): commit- and blob-SHA-pinned, bounded, COMPLETE/PARTIAL/FAILED coverage in verdicts and contract v1.1. Purpose: dependency files at a ref without treating absence as proof.
 - [DONE 2026-10-21] Namespaced pom.xml (#112): real-world POMs no longer parse to zero deps; DOCTYPE refused, depth/element caps.
 - [DONE 2026-10-21, v0.6.1] SBOMs discovered in GitHub repos are ingested (#117); every file read bounded (`core/bounded_io.py`), deep JSON is a clean error, iterative package-lock v1 walk (#118); repo/registry identifiers validated before URLs (#119). Purpose: no silent input-layer gaps.
-- [NEXT] Collector HTTP responses streamed with a byte cap (A6b). Purpose: bound the last unbounded input channel.
+- [DONE 2026-10-28, v0.7.1] Collector HTTP responses streamed with a byte cap (A6b, #155). Purpose: bound the last unbounded input channel.
 
 ## P3 — Intelligence Benchmark
 
@@ -58,7 +58,7 @@ Purpose: machine-readable dependency intelligence another system can consume wit
 - [PLANNED, marked in schema, never populated] `signature`, `signing_key_id`, `trust_root` — keys, signatures, and trust roots are a separate, later issue. The contract is NOT a signature format and NOT a policy decision: consumers decide what to do with the assessment.
 - [DONE] Evidence contract v1 standalone schema (issue #67): `schemas/evidence-contract/v1/schema.json` (draft 2020-12, per-field provenance pointers, planned signature fields null), `core/evidence_contract.py` (builder over the #60 convergence, dependency-free fail-closed validator, content hash over the v1 shape), `openpulse attest` CLI (JSONL emit, composable sources), docs/EVIDENCE_CONTRACT.md. No new dependencies.
 - [DONE 2026-10-19] Evidence contract v1.1 (`schemas/evidence-contract/v1.1/`): additive required `inspection_coverage` block; v1.0 schema untouched.
-- [NEXT, v0.7.0] Contract v1.2: content hash over RFC 8785 (JCS) canonical JSON so non-Python consumers can verify it (today's hash uses Python-mode `model_dump()`). Signature fields stay null.
+- [NEXT, v0.8.0] Contract v1.2: content hash over RFC 8785 (JCS) canonical JSON so non-Python consumers can verify it (today's hash uses Python-mode `model_dump()`). Signature fields stay null.
 - [NEXT] First external consumer validation (M9 experiment design only — no coupled runtime before the contract has a consumer).
 
 ## Dispositions

@@ -117,7 +117,12 @@ def test_golden_redis_eol_pins_and_namespaces():
     # Q1 -- what changed: one lifecycle finding, scoped to cycle 6.2.
     findings = [f for f in analyze(raw, today=today) if f["event_type"] == "EOL"]
     assert len(findings) == 1
-    assert findings[0]["scope"] == {"kind": "version", "versions": ["6.2"]}
+    assert findings[0]["scope"] == {
+        "kind": "version",
+        "versions": ["6.2"],
+        "exhaustive": True,
+        "basis": "definitional",
+    }
     assert findings[0]["lifecycle_state"] == "EFFECTIVE"
 
     event = finding_to_event(findings[0], "redis", today=today)
@@ -138,7 +143,9 @@ def test_golden_redis_eol_pins_and_namespaces():
     assert (upstream_old.affected, upstream_old.relationship) == (True, "AFFECTS_VERSION")
     assert upstream_old.confidence == "EMERGING"
     assert (upstream_new.affected, upstream_new.relationship) == (False, "NOT_AFFECTED")
-    assert (bitnami_old.affected, bitnami_old.relationship) == (False, "NOT_AFFECTED")
+    # Curated as another project (bitnami-redis-stack): no association with
+    # an upstream redis release line, which needs no complete scope (S2).
+    assert (bitnami_old.affected, bitnami_old.relationship) == (False, "UNKNOWN")
 
     # Q6 -- when: effective in the past, in force now.
     assert findings[0]["effective_at"] == "2024-01-01"
@@ -185,7 +192,12 @@ def test_golden_postgresql_eol_pins_and_namespaces():
     # The 17 cycle (EOL 2029) is far out, so it yields no finding.
     findings = [f for f in analyze(raw, today=today) if f["event_type"] == "EOL"]
     assert len(findings) == 1
-    assert findings[0]["scope"] == {"kind": "version", "versions": ["13"]}
+    assert findings[0]["scope"] == {
+        "kind": "version",
+        "versions": ["13"],
+        "exhaustive": True,
+        "basis": "definitional",
+    }
     assert findings[0]["lifecycle_state"] == "EFFECTIVE"
 
     event = finding_to_event(findings[0], "postgresql", today=today)
@@ -215,7 +227,12 @@ def test_golden_postgresql_eol_pins_and_namespaces():
     assert (upstream_old.affected, upstream_old.relationship) == (True, "AFFECTS_VERSION")
     assert upstream_old.confidence == "EMERGING"
     assert (upstream_new.affected, upstream_new.relationship) == (False, "NOT_AFFECTED")
-    assert (bitnami_old.affected, bitnami_old.relationship) == (False, "NOT_AFFECTED")
+    # FLIPPED (TR-2026-01 D5): docker.io/bitnami/<x> resolves only via the
+    # generic Bitnami namespace heuristic (REVIEW_REQUIRED), which cannot
+    # prove a different project -- and this image packages the very
+    # upstream cycle the event names. NOT_AFFECTED was a false clear;
+    # RELATED keeps it undetermined and never affected.
+    assert (bitnami_old.affected, bitnami_old.relationship) == (False, "RELATED")
 
     # Q6 -- when: effective in the past, in force now.
     assert findings[0]["effective_at"] == "2025-11-13"
@@ -265,7 +282,12 @@ def test_golden_kubernetes_eol_pins_and_skew():
     # The 1.37 cycle (EOL 2027) is far out, so it yields no finding.
     findings = [f for f in analyze(raw, today=today) if f["event_type"] == "EOL"]
     assert len(findings) == 1
-    assert findings[0]["scope"] == {"kind": "version", "versions": ["1.31"]}
+    assert findings[0]["scope"] == {
+        "kind": "version",
+        "versions": ["1.31"],
+        "exhaustive": True,
+        "basis": "definitional",
+    }
     assert findings[0]["lifecycle_state"] == "EFFECTIVE"
 
     event = finding_to_event(findings[0], "kubernetes", today=today)
@@ -294,7 +316,12 @@ def test_golden_kubernetes_eol_pins_and_skew():
     assert (pinned_old.affected, pinned_old.relationship) == (True, "AFFECTS_VERSION")
     assert pinned_old.confidence == "EMERGING"
     assert (pinned_new.affected, pinned_new.relationship) == (False, "NOT_AFFECTED")
-    assert (bitnami_old.affected, bitnami_old.relationship) == (False, "NOT_AFFECTED")
+    # FLIPPED (TR-2026-01 D5): docker.io/bitnami/<x> resolves only via the
+    # generic Bitnami namespace heuristic (REVIEW_REQUIRED), which cannot
+    # prove a different project -- and this image packages the very
+    # upstream cycle the event names. NOT_AFFECTED was a false clear;
+    # RELATED keeps it undetermined and never affected.
+    assert (bitnami_old.affected, bitnami_old.relationship) == (False, "RELATED")
 
     # Q6 -- when: effective in the past, in force now.
     assert findings[0]["effective_at"] == "2025-11-11"
@@ -344,7 +371,12 @@ def test_golden_kafka_eol_pins_and_namespaces():
     # The 4.3 cycle has no announced date, so it yields no finding.
     findings = [f for f in analyze(raw, today=today) if f["event_type"] == "EOL"]
     assert len(findings) == 1
-    assert findings[0]["scope"] == {"kind": "version", "versions": ["3.8"]}
+    assert findings[0]["scope"] == {
+        "kind": "version",
+        "versions": ["3.8"],
+        "exhaustive": True,
+        "basis": "definitional",
+    }
     assert findings[0]["lifecycle_state"] == "EFFECTIVE"
 
     event = finding_to_event(findings[0], "kafka", today=today)
@@ -376,8 +408,13 @@ def test_golden_kafka_eol_pins_and_namespaces():
     assert (pinned_old.affected, pinned_old.relationship) == (True, "AFFECTS_VERSION")
     assert pinned_old.confidence == "EMERGING"
     assert (pinned_new.affected, pinned_new.relationship) == (False, "NOT_AFFECTED")
-    assert (bitnami_cycle.affected, bitnami_cycle.relationship) == (False, "NOT_AFFECTED")
-    assert (bitnami_old.affected, bitnami_old.relationship) == (False, "NOT_AFFECTED")
+    # FLIPPED (TR-2026-01 D5): docker.io/bitnami/<x> resolves only via the
+    # generic Bitnami namespace heuristic (REVIEW_REQUIRED), which cannot
+    # prove a different project -- and this image packages the very
+    # upstream cycle the event names. NOT_AFFECTED was a false clear;
+    # RELATED keeps it undetermined and never affected.
+    assert (bitnami_cycle.affected, bitnami_cycle.relationship) == (False, "RELATED")
+    assert (bitnami_old.affected, bitnami_old.relationship) == (False, "RELATED")
 
     # Q6 -- when: effective in the past, in force now.
     assert findings[0]["effective_at"] == "2024-11-06"
@@ -471,7 +508,12 @@ def test_golden_cert_manager_eol_pins_and_namespaces():
     assert (pinned_18.affected, pinned_18.relationship) == (True, "AFFECTS_VERSION")
     assert (pinned_21.affected, pinned_21.relationship) == (False, "NOT_AFFECTED")
     assert (cross_cycle.affected, cross_cycle.relationship) == (False, "NOT_AFFECTED")
-    assert (bitnami_18.affected, bitnami_18.relationship) == (False, "NOT_AFFECTED")
+    # FLIPPED (TR-2026-01 D5): docker.io/bitnami/<x> resolves only via the
+    # generic Bitnami namespace heuristic (REVIEW_REQUIRED), which cannot
+    # prove a different project -- and this image packages the very
+    # upstream cycle the event names. NOT_AFFECTED was a false clear;
+    # RELATED keeps it undetermined and never affected.
+    assert (bitnami_18.affected, bitnami_18.relationship) == (False, "RELATED")
 
     # Q6 -- when: both effective in the past, in force now.
     assert by_cycle["1.19"]["effective_at"] == "2026-07-08"
@@ -549,7 +591,10 @@ def test_golden_capa_ownership_move():
     old_ref = check_dependency({"kind": "image", "ref": "github.com/fireeye/capa"}, [event])
     new_ref = check_dependency({"kind": "image", "ref": "github.com/mandiant/capa"}, [event])
     assert (old_ref.affected, old_ref.relationship) == (True, "AFFECTS_ARTIFACT")
-    assert (new_ref.affected, new_ref.relationship) == (False, "UNKNOWN")
+    # FLIPPED (TR-2026-01 interim measure, unresolved identity): the new
+    # canonical path resolves only to itself while naming the project, so
+    # its identity is unresolved -- RELATED, never dropped as unrelated.
+    assert (new_ref.affected, new_ref.relationship) == (False, "RELATED")
 
     # Q4 + Q5 -- dependency verdicts: the old path is the affected
     # dependency; the new path and a bare package pin are not impact.
@@ -633,7 +678,10 @@ def test_golden_etcd_namespace_move():
         {"kind": "package", "package": "etcd", "ecosystem": "", "version": None}, [event]
     )
     assert (old_ref.affected, old_ref.relationship) == (True, "AFFECTS_ARTIFACT")
-    assert (new_ref.affected, new_ref.relationship) == (False, "UNKNOWN")
+    # FLIPPED (TR-2026-01 interim measure, unresolved identity): the new
+    # canonical path resolves only to itself while naming the project, so
+    # its identity is unresolved -- RELATED, never dropped as unrelated.
+    assert (new_ref.affected, new_ref.relationship) == (False, "RELATED")
     assert (package_pin.affected, package_pin.relationship) == (False, "AFFECTS_PROJECT")
 
     # Q6 -- when: the move already happened.
@@ -720,7 +768,10 @@ def test_golden_traefik_ownership_move():
         {"kind": "package", "package": "traefik", "ecosystem": "", "version": None}, [event]
     )
     assert (old_ref.affected, old_ref.relationship) == (True, "AFFECTS_ARTIFACT")
-    assert (new_ref.affected, new_ref.relationship) == (False, "UNKNOWN")
+    # FLIPPED (TR-2026-01 interim measure, unresolved identity): the new
+    # canonical path resolves only to itself while naming the project, so
+    # its identity is unresolved -- RELATED, never dropped as unrelated.
+    assert (new_ref.affected, new_ref.relationship) == (False, "RELATED")
     assert (package_pin.affected, package_pin.relationship) == (False, "AFFECTS_PROJECT")
     assert old_ref.confidence == "EMERGING"
 
@@ -828,7 +879,10 @@ def test_golden_fbsdk_archive_and_move():
         [arch_event],
     )
     assert (old_ref.affected, old_ref.relationship) == (True, "AFFECTS_ARTIFACT")
-    assert (new_ref.affected, new_ref.relationship) == (False, "UNKNOWN")
+    # FLIPPED (TR-2026-01 interim measure, unresolved identity): the new
+    # canonical path resolves only to itself while naming the project, so
+    # its identity is unresolved -- RELATED, never dropped as unrelated.
+    assert (new_ref.affected, new_ref.relationship) == (False, "RELATED")
     assert (npm_pin.affected, npm_pin.relationship) == (False, "AFFECTS_PROJECT")
     assert moved["scope"] == {"kind": "project", "versions": []}
 
@@ -1138,7 +1192,8 @@ def test_golden_terraform_eol_pins_and_fork_line():
     assert (pinned_old.affected, pinned_old.relationship) == (True, "AFFECTS_VERSION")
     assert pinned_old.confidence == "EMERGING"
     assert (pinned_new.affected, pinned_new.relationship) == (False, "NOT_AFFECTED")
-    assert (fork_same_tag.affected, fork_same_tag.relationship) == (False, "NOT_AFFECTED")
+    # The fork is curated as its own project: no association (S2).
+    assert (fork_same_tag.affected, fork_same_tag.relationship) == (False, "UNKNOWN")
 
     # Q6 -- when: effective in the past, in force now.
     assert findings[0]["effective_at"] == "2026-08-26"
