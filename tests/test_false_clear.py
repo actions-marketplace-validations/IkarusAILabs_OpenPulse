@@ -7,12 +7,42 @@ dependency that was in scope (or headline a clearance over an
 unresolved cause).
 """
 
+import json
 from datetime import datetime, timezone
+
+import pytest
 
 from analyzers.security_analyst import correlate
 from core.risk.check import check_dependency
 from core.schema.models import Artifact, Evidence, OSSEvent, Scope, Source
 from core.versions import osv_applicable
+
+#: `acme` stands for a curated project in these tests (F4). An uncurated
+#: package named like the event's project is unresolved, which
+#: test_f4_uncurated_package_named_like_the_project_is_unresolved pins.
+ACME = {
+    "slug": "acme",
+    "aliases": ["acme"],
+    "docker_images": [],
+    "packages": [{"ecosystem": "PyPI", "name": "acme"}],
+    "identity": {"status": "VERIFIED", "reviewed_at": "2026-10-30", "source": "test fixture"},
+}
+
+
+@pytest.fixture(autouse=True)
+def _curated_acme(request, monkeypatch):
+    """Curate `acme` for the duration of each test, then restore the catalog."""
+    from core.entities import catalog, resolve
+
+    if "uncurated" in request.node.name:
+        yield
+        return
+    base = catalog.load_catalog()
+    monkeypatch.setattr(catalog, "load_catalog", lambda path=None: [*base, ACME])
+    resolve._catalog_map.cache_clear()
+    yield
+    resolve._catalog_map.cache_clear()
+
 
 D1 = "sha256:" + "1" * 64
 D2 = "sha256:" + "2" * 64
@@ -545,8 +575,11 @@ def test_d13_unmapped_package_is_unresolved_not_unassociated():
     unmapped = check_dependency(
         {"kind": "package", "package": "zzzpkg", "ecosystem": "PyPI", "version": "9.1"}, [eol]
     )
+    # FLIPPED (package curation, 2026-10-30): PyPI `mysql` is a client
+    # package, not the MySQL server, so it no longer stands for "curated as
+    # another project". PyPI `requests` is curated as its own project.
     curated_other = check_dependency(
-        {"kind": "package", "package": "mysql", "ecosystem": "PyPI", "version": "9.1"}, [eol]
+        {"kind": "package", "package": "requests", "ecosystem": "PyPI", "version": "9.1"}, [eol]
     )
     assert unmapped.relationship == "RELATED"
     assert curated_other.relationship == "UNKNOWN"
@@ -839,3 +872,94 @@ def test_d10_curated_other_project_has_no_association():
     )
     verdict = check_dependency(_image("ghcr.io/opentofu/opentofu:1.14"), [eol])
     assert verdict.relationship == "UNKNOWN"
+
+
+def test_f2_project_package_element_covers_curated_packages_only():
+    """F2 (specified 2026-10-30): a package-scope value naming the event's own
+    project denotes every package curated as that project. Membership follows
+    curated identity: a curated other project has no association, and an
+    unmapped package is unresolved, never a member by the project's name."""
+    itext = OSSEvent(**json.load(open("data/fixtures/itext-license/event.json", encoding="utf-8")))
+    assert "itext" in itext.scope.packages
+
+    def rel(package, ecosystem="Maven"):
+        dep = {"kind": "package", "package": package, "ecosystem": ecosystem, "version": "8.0.2"}
+        return check_dependency(dep, [itext]).relationship
+
+    assert rel("com.itextpdf:sign") == "AFFECTS_PACKAGE"  # curated, not listed by name
+    assert rel("org.apache.pdfbox:pdfbox") == "RELATED"  # unmapped: undetermined
+    assert rel("redis", "PyPI") == "UNKNOWN"  # curated as redis-py
+
+
+def test_f2_package_names_compare_in_canonical_form():
+    """Maven groupId:artifactId equals the listed groupId/artifactId; PyPI
+    names fold per PEP 503. Inequality after folding stays undetermined."""
+
+    def event(project, packages):
+        scope = Scope(kind="package", packages=packages, exhaustive=True, basis="definitional")
+        return _event(f"f2-{project}", scope=scope).model_copy(update={"project_slug": project})
+
+    def rel(package, ecosystem, ev):
+        dep = {"kind": "package", "package": package, "ecosystem": ecosystem, "version": "1.0"}
+        return check_dependency(dep, [ev]).relationship
+
+    itext = event("itext", ["com.itextpdf/kernel"])
+    airflow = event("airflow", ["apache_airflow"])
+    assert rel("com.itextpdf:kernel", "Maven", itext) == "AFFECTS_PACKAGE"
+    assert rel("com.itextpdf:sign", "Maven", itext) == "RELATED"  # listed by name only
+    assert rel("Apache.Airflow", "PyPI", airflow) == "AFFECTS_PACKAGE"
+
+
+def _package_scope(values, exhaustive=True):
+    scope = Scope(
+        kind="package",
+        packages=values,
+        exhaustive=exhaustive,
+        basis="definitional" if exhaustive else None,
+    )
+    return _event("f3", scope=scope).model_copy(update={"project_slug": "redis"})
+
+
+def _rel(package, ecosystem, event):
+    dep = {"kind": "package", "package": package, "ecosystem": ecosystem, "version": "6.2.0"}
+    return check_dependency(dep, [event]).relationship
+
+
+def test_f3_qualified_value_names_exactly_one_package():
+    """F3: `pkg:pypi/redis` is redis-py, whatever project the event is about;
+    a bare `redis` in a Redis server event is not redis-py."""
+    assert _rel("redis", "PyPI", _package_scope(["pkg:pypi/redis"])) == "AFFECTS_PACKAGE"
+    assert _rel("redis", "npm", _package_scope(["pkg:pypi/redis"])) == "UNKNOWN"  # node-redis
+    assert _rel("redis", "PyPI", _package_scope(["redis"])) == "UNKNOWN"  # bare: identity first
+
+
+def test_f3_another_ecosystem_excludes_only_from_a_complete_scope():
+    unmapped = ("zzzpkg", "PyPI")
+    assert _rel(*unmapped, _package_scope(["pkg:npm/zzzpkg"])) == "NOT_AFFECTED"
+    assert _rel(*unmapped, _package_scope(["pkg:npm/zzzpkg"], exhaustive=False)) == "RELATED"
+    # One bare value is enough to leave it undetermined.
+    assert _rel(*unmapped, _package_scope(["pkg:npm/zzzpkg", "other"])) == "RELATED"
+
+
+def test_f3_unreadable_qualified_values_are_undetermined_never_exclusions():
+    for value in ("pkg:pypi/zzzpkg@1.0", "pkg:nuget/zzzpkg", "pkg:"):
+        assert _rel("zzzpkg", "PyPI", _package_scope([value])) == "RELATED", value
+    assert _rel("zzzpkg", "", _package_scope(["pkg:npm/zzzpkg"])) == "RELATED"  # no ecosystem
+
+
+def test_f4_uncurated_package_named_like_the_project_is_unresolved():
+    """F4: a package that resolves only to itself is unresolved even when its
+    name is the event's project, the package-side twin of D10. It is never
+    excluded by version, and never counted as the project."""
+    eol = _event(
+        "f4", scope=Scope(kind="version", versions=["8"], exhaustive=True, basis="definitional")
+    )
+    for version in ("8.1", "9.2"):
+        dep = {"kind": "package", "package": "acme", "ecosystem": "", "version": version}
+        verdict = check_dependency(dep, [eol])
+        assert verdict.relationship == "RELATED", version
+        assert "resolves only to itself" in verdict.reason
+    # An ecosystem-qualified value still names the exact package (F3).
+    named = _event("f4-named", scope=Scope(kind="package", packages=["pkg:pypi/acme"]))
+    dep = {"kind": "package", "package": "acme", "ecosystem": "PyPI", "version": "1.0"}
+    assert check_dependency(dep, [named]).relationship == "AFFECTS_PACKAGE"

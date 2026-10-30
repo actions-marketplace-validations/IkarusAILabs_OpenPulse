@@ -18,15 +18,16 @@ tie (AFFECTS_PROJECT) is contextual, never impact. Pure functions.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from analyzers.security_analyst import correlate
 from core.detections import ledger
-from core.entities.identity import resolution_trust
-from core.entities.resolve import resolve_project
+from core.entities.catalog import is_qualified, package_name_key, qualified_package
+from core.entities.identity import UNRESOLVED_IDENTITY, package_trust, resolution_trust
 from core.risk.match import event_affects_ref
 from core.schema.models import OSSEvent
 from core.versions import in_release_line
@@ -190,12 +191,129 @@ def _event_scope_cause(dep: dict[str, Any], event: OSSEvent) -> dict[str, Any] |
     }
 
 
+def _qualified_results(dep: dict[str, Any], event: OSSEvent) -> list[str]:
+    """Element results for ecosystem-qualified package-scope values (F3).
+
+    A purl value names exactly one package, so it decides by (ecosystem,
+    canonical name) before identity: M when equal; N when the dependency
+    is a package of a different ecosystem (never the same object); ?
+    when the dependency states no ecosystem, the value does not parse,
+    or only the name differs (names are not fully canonical).
+    """
+    scope = event.scope
+    if scope is None or scope.kind != "package":
+        return []
+    ecosystem = str(dep.get("ecosystem") or "").strip()
+    mine = package_name_key(ecosystem, str(dep["package"])) if ecosystem else None
+    results = []
+    for value in scope.packages:
+        if not is_qualified(value):
+            continue
+        key = qualified_package(str(value))
+        if key is None or mine is None or ecosystem.lower() == "generic":
+            results.append("?")
+        elif key == mine:
+            results.append("M")
+        elif key[0] != mine[0]:
+            results.append("N")
+        else:
+            results.append("?")
+    return results
+
+
+def _go_module_repository(dep: dict[str, Any], event: OSSEvent) -> str | None:
+    """The event's source-repository artifact a Go module lives in, or None.
+
+    The module path equals the repository path or extends it by a
+    subdirectory or major-version suffix (`github.com/o/r/v3`). A module on
+    a fixed hosting convention (`gopkg.in/yaml.v3`, `golang.org/x/lint`)
+    also lives in the GitHub repository that convention names, the same
+    rule inventory discovery uses to find it. Compared case-insensitively,
+    as code hosts resolve repository paths.
+    """
+    from core.discovery import go_module_repository
+
+    if str(dep.get("ecosystem") or "").strip().lower() not in ("go", "golang"):
+        return None
+    module = str(dep["package"]).strip().lower()
+    hosted = go_module_repository(module)
+    paths = {module, f"github.com/{hosted.lower()}"} if hosted else {module}
+    for artifact in event.affected_artifacts:
+        if artifact.kind != "source-repository":
+            continue
+        repo = re.sub(r"^[a-z][a-z0-9+.-]*://", "", str(artifact.ref).strip().lower()).rstrip("/")
+        if repo and any(p == repo or p.startswith(repo + "/") for p in paths):
+            return str(artifact.ref)
+    return None
+
+
 def _scope_cause(dep: dict[str, Any], event: OSSEvent) -> dict[str, Any] | None:
-    slug = resolve_project(str(dep["package"]))
-    if slug != event.project_slug:
-        trust = resolution_trust(str(dep["package"]))
-        if trust["via"] != "self":
-            return None  # curated as another project: no association
+    trust = package_trust(str(dep["package"]), dep.get("ecosystem"))
+    slug = trust["slug"]
+    qualified = _qualified_results(dep, event)
+    exact = {
+        "cause": "upstream_change",
+        "event_id": event.id,
+        "event_type": event.event_type.value,
+        "project": event.project_slug,
+        "impact": event.impact.value,
+        "evidence": [e.source.name for e in event.evidences],
+        "evidence_confidence": event.confidence.value,
+        "match_method": "event_scope_package",
+    }
+    if "M" in qualified:
+        # The event names this exact (ecosystem, package): self-identity,
+        # no mapping involved, whatever the catalog says.
+        return {
+            **exact,
+            "identity_status": "VERIFIED",
+            "identity_via": "exact-artifact",
+            "relationship": "AFFECTS_PACKAGE",
+            "affected": True,
+            "reason": f"{dep['ecosystem']} package {dep['package']} is named in event scope "
+            f"packages {event.scope.packages}",
+        }
+    repository = _go_module_repository(dep, event)
+    if repository is not None:
+        # A Go module path is a repository locator: a module at or below a
+        # named source repository lives in it (go.mod requires are what a
+        # relocation's repository artifact exists to reach). Self-identity,
+        # like the M case above. Positive only: a module outside the named
+        # paths may still be that repository under a vanity import path, so
+        # it is never cleared here.
+        return {
+            **exact,
+            "identity_status": "VERIFIED",
+            "identity_via": "exact-artifact",
+            "relationship": "AFFECTS_ARTIFACT",
+            "affected": True,
+            "match_method": "event_scope:artifact",
+            "reason": f"Go module {dep['package']} lives in affected source repository "
+            f"{repository}",
+        }
+    # A self-resolved package is unresolved even when its name is the event's
+    # project (F4): a name is not identity, as D10 holds for images.
+    unresolved = trust["via"] == "self"
+    if (slug != event.project_slug or unresolved) and (
+        not unresolved or UNRESOLVED_IDENTITY.get() == "unrelated"
+    ):
+        return None  # curated as another project: no association
+    bare = [p for p in (event.scope.packages if qualified else []) if not is_qualified(p)]
+    if qualified and not bare and set(qualified) == {"N"}:
+        # Every value names a package of another ecosystem: an exclusion by
+        # object kind, not by identity, so it needs no resolved identity.
+        # Admissibility (complete scope, basis, currency) is applied by
+        # _event_scope_cause.
+        return {
+            **exact,
+            "identity_status": trust["identity_status"],
+            "identity_via": trust["via"],
+            "relationship": "NOT_AFFECTED",
+            "affected": False,
+            "reason": f"{dep['ecosystem']} package {dep['package']} is not a package of the "
+            f"ecosystems named in event scope packages {event.scope.packages}",
+        }
+    if slug != event.project_slug or unresolved:
         if event.scope is not None and event.scope.kind in ("artifact", "registry"):
             # Container-image and registry scopes name locations a package
             # reference never is: no association, whatever its identity.
@@ -222,7 +340,6 @@ def _scope_cause(dep: dict[str, Any], event: OSSEvent) -> dict[str, Any] | None:
                 f"neither excluded from nor unrelated to project {event.project_slug}"
             ),
         }
-    trust = resolution_trust(str(dep["package"]))
     scope = event.scope
     version = dep.get("version")
     base: dict[str, Any] = {
@@ -287,8 +404,13 @@ def _scope_cause(dep: dict[str, Any], event: OSSEvent) -> dict[str, Any] | None:
             "reason": (f"{dep['package']}=={version} is outside scope versions {scope.versions}"),
         }
     if kind == "package" and scope.packages:
-        names = {str(p).lower() for p in scope.packages}
-        if str(dep["package"]).lower() in names or slug in names:
+        # Names compare in canonical form: lowercase, PEP 503 folding for
+        # PyPI, Maven groupId:artifactId = groupId/artifactId.
+        ecosystem = str(dep.get("ecosystem") or "generic")
+        names = {
+            package_name_key(ecosystem, str(p))[1] for p in scope.packages if not is_qualified(p)
+        }
+        if package_name_key(ecosystem, str(dep["package"]))[1] in names:
             return {
                 **base,
                 "relationship": "AFFECTS_PACKAGE",
@@ -296,8 +418,23 @@ def _scope_cause(dep: dict[str, Any], event: OSSEvent) -> dict[str, Any] | None:
                 "match_method": "event_scope_package",
                 "reason": f"{dep['package']} is inside event scope packages {scope.packages}",
             }
-        # Package names are not canonicalised per ecosystem (PEP 503
-        # folding, Maven group:artifact, npm scopes...), so a name that
+        # A project package element (TR-2026-01 F2): a listed value that is
+        # the event's own project denotes every package a curated mapping
+        # assigns to it. The slug equals the project only through such a
+        # mapping here, since an unmapped package resolves to itself.
+        if event.project_slug.lower() in {str(p).lower() for p in scope.packages}:
+            return {
+                **base,
+                "relationship": "AFFECTS_PACKAGE",
+                "affected": True,
+                "match_method": "event_scope_package",
+                "reason": (
+                    f"{dep['package']} is a curated package of project {slug}, which event "
+                    f"scope packages {scope.packages} name as a whole"
+                ),
+            }
+        # Canonical folding covers PyPI and Maven spelling only (npm scopes,
+        # Go module paths and other forms are not modelled), so a name that
         # differs from every listed one may still be the same package:
         # inequality is undetermined, never an exclusion.
         return {
@@ -334,7 +471,8 @@ def _security_causes(dep: dict[str, Any], bundles: dict[str, dict[str, Any]]) ->
     """CVE/package/version applicability stream (independent of events)."""
     if dep["kind"] != "package":
         return []
-    slug = resolve_project(str(dep["package"]))
+    trust = package_trust(str(dep["package"]), dep.get("ecosystem"))
+    slug = trust["slug"]
     raw = bundles.get(slug)
     if raw is None:
         return []
@@ -345,7 +483,6 @@ def _security_causes(dep: dict[str, Any], bundles: dict[str, dict[str, Any]]) ->
         "version": dep.get("version"),
     }
     causes = []
-    trust = resolution_trust(str(dep["package"]))
     for finding in correlate(raw, context):
         relationship = str(finding.get("relationship", "UNKNOWN"))
         if relationship == "UNKNOWN":
@@ -567,13 +704,33 @@ def check_dependency(
     *,
     as_of: datetime | None = None,
     max_evidence_age: timedelta | None = None,
+    unresolved_identity: Literal["undetermined", "unrelated"] = "undetermined",
 ) -> DependencyVerdict:
     """One dep vs events (+ optional raw bundles) -> explicit verdict.
 
     Withdrawn and superseded events are not evaluated. With ``as_of``
     and ``max_evidence_age`` both given, a negative from an event whose
     newest evidence is older than the bound becomes RELATED (stale).
+    ``unresolved_identity="unrelated"`` is the evaluation's identity
+    ablation (``core.entities.identity.UNRESOLVED_IDENTITY``): unsound by
+    design, never for production use.
     """
+    if unresolved_identity not in ("undetermined", "unrelated"):
+        raise ValueError(f"unresolved_identity: {unresolved_identity!r}")
+    token = UNRESOLVED_IDENTITY.set(unresolved_identity)
+    try:
+        return _check_dependency(dep, events, bundles, as_of, max_evidence_age)
+    finally:
+        UNRESOLVED_IDENTITY.reset(token)
+
+
+def _check_dependency(
+    dep: dict[str, Any],
+    events: list[OSSEvent],
+    bundles: dict[str, dict[str, Any]] | None,
+    as_of: datetime | None,
+    max_evidence_age: timedelta | None,
+) -> DependencyVerdict:
     bundles = bundles or {}
     events = [event for event in events if event.is_current_record()]
     causes: list[Cause] = []

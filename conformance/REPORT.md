@@ -114,3 +114,38 @@ The first randomised run found:
 ## Limits
 
 The matrix covers chosen dimensions, not every input. It checks the specified semantics on that matrix and is not a proof. Identity is supplied as ground truth, so resolver errors are outside it. The oracle and the implementation were written by the same team, which limits independence. An external re-implementation of the oracle would strengthen the result.
+
+## Update 2026-10-30: F2 specified, package names that are not the slug
+
+Figures above are those of the TR-2026-01 snapshot (`8a9c3a8`). Package curation exposed **F2**: the implementation counted a package as a member of a package scope that lists its project's slug, which the specification did not say. The rule is now specified as the *project package element* (`independent/SPEC.md` §4.4) and implemented in the oracle. The generators gained `redis-server`, a package curated as Redis whose name is not the slug; without it, no case reached the rule.
+
+| Check | Snapshot | Now |
+|---|---|---|
+| Matrix | 3,947 of 3,995 conform, 48 label | 4,158 of 4,230 conform, 72 label (same difference, now for both packages of the project) |
+| Randomised, seed 7 | 100,000 summaries; 200,272 per-event verdicts | 100,000 summaries; 200,206 per-event verdicts (the generator changed) |
+| Re-injection | 19 of 19 mutants | 20 of 20, including F2 (a project package element ignored), caught by matrix, random cases and regression tests |
+
+Open: **F3**, the order of name and identity for package elements (`independent/SPEC.md` §8).
+
+## Update 2026-10-30: F3, ecosystem-qualified package scopes
+
+Package-scope values may be purls (`pkg:pypi/redis`). A qualified value decides on (ecosystem, canonical name) before identity; a bare value decides on identity first, as the engine always did. The specification is aligned. The matrix gained packages with a stated ecosystem (redis-py, node-redis, PyPI `mysql`) and qualified and bare package scopes; the generators draw from the same tables.
+
+| Check | After F2 | After F3 |
+|---|---|---|
+| Matrix | 4,158 of 4,230 conform, 72 label | 6,123 of 6,195 conform, the same 72 label rows |
+| Randomised, seed 7 | 100,000 summaries; 200,206 per-event | 100,000 summaries; 200,094 per-event (the generator changed) |
+| Re-injection | 20 of 20 | 21 of 21, including F3 (a qualified value matched by name alone) |
+
+Open: **F4**, an uncatalogued event project (`independent/SPEC.md` §8).
+
+## Update 2026-10-30: F4, an uncatalogued event project
+
+The engine treated a package that resolves only to itself, and whose name equals the event's project, as that project: version-tested, and clearable. The specification gives it unresolved identity (`independent/SPEC.md` §1), as D10 does for images. It now gives **?**. The randomised generator gained an event project that is not in the catalog (`zzzpkg`), which is the only way to reach the path.
+
+| Check | After F3 | After F4 |
+|---|---|---|
+| Matrix | 6,123 of 6,195 conform, 72 label | unchanged (its events are all about a curated project) |
+| Randomised, seed 7 | 100,000 summaries; 200,094 per-event | 100,000 summaries; 200,070 per-event (the generator changed) |
+| Re-injection | 21 of 21 | 22 of 22, including F4, caught by the random cases and a regression test |
+

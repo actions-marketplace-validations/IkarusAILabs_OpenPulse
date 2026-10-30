@@ -4,7 +4,35 @@ All notable changes to OpenPulse. Versions follow semver; while the project is `
 
 ## Unreleased
 
+### Added
+
+- **Ecosystem-qualified package scopes (F3).** A package-scope value may be a purl without a version (`pkg:pypi/redis`). It names exactly one package: a dependency of that ecosystem and name is AFFECTS_PACKAGE whatever its curated project, a package of another ecosystem is excluded (only from a scope declared complete with a basis), and anything unreadable is undetermined. Bare values keep working and are read through curated identity.
+- **Evidence contract 1.2.0: what a verdict does and does not assert** (TR-2026-01 sections 5.1-5.2, ROADMAP R-B6). Every document now carries three new things:
+  - `verdict_meaning`: direct scope membership as a closed vocabulary; embedded components, availability, maintenance and security consequence marked `not_evaluated`; and a fixed statement with no upstream text;
+  - `scope.completeness`: whether the scope was declared complete, its basis, and whether that admits a negative;
+  - `evaluation_context`: whether a freshness bound was applied.
+
+  `openpulse attest` emits 1.2. The 1.1 and 1.0 schemas are unchanged and their documents still validate and verify. **Upgrade note:** a consumer that validates against the 1.1 schema must switch to `schemas/evidence-contract/v1.2/schema.json`, because a 1.2 document fails 1.1 validation (`additionalProperties: false`).
+- **MCP responses state verdict meaning.** `verdict.meaning` carries the same closed vocabularies, every cause carries `direct_scope`, and the fixed note now says that NOT_AFFECTED is not a clearance either.
+
 ### Fixed
+
+- **A package named like an uncatalogued event project was treated as that project (F4).** This changes verdicts. A package that resolves only to itself, because no curated mapping exists, is now RELATED (identity unresolved) against that project's events, even when its name is the project's. It was previously version-tested, and could be cleared. Images already behaved this way (D10). capa (PyPI `flare-capa`) and react-native-fbsdk (npm) are now curated, so their package pins keep their project tie.
+- **Package names in a package scope compare in canonical form (F2).** This changes verdicts. A Maven `groupId:artifactId` dependency now matches a listed `groupId/artifactId`, and PyPI names fold per PEP 503 (`Apache.Airflow` = `apache_airflow`). A scope value naming the event's own project still covers every package curated as that project; that rule is now part of the specification (TR-2026-01 §5.3, `conformance/independent/SPEC.md` §4.4) and of the conformance gate.
+- **Every catalog entry now curates its packages (F1, completed).** This changes verdicts.
+  - Libraries list the packages that are the project, Maven coordinates included. `groupId:artifactId` from manifests and SBOMs now matches the catalog's `groupId/artifactId`.
+  - Servers and tools declare none, so a package that only shares their name is unresolved (RELATED), not the project. Examples: PyPI `kubernetes` (the Python client), npm `mongodb` (the Node.js driver), npm `angular` (AngularJS 1.x), PyPI `kafka` and PyPI `postgres`.
+  - Curated iText modules such as `com.itextpdf:sign` now resolve to iText.
+  - Packages with no stated ecosystem resolve by name, as before. A catalog test requires every new entry to state its packages.
+- **MCP tools resolved package identity by name (F1, follow-up).** `dependency_status` and `check_dependency_file` now resolve packages per ecosystem, as the verdict engine does. PyPI `redis` is reported, and looked up, as redis-py.
+
+- **A package name was an identity across ecosystems (F1).** This changes verdicts. Package dependencies resolved by name alone, so PyPI `redis` 6.2.0 was AFFECTS_VERSION under Redis server 6.2 end of life, although PyPI `redis` is redis-py, the Python client. The catalog also mapped the Redis server to PyPI `redis` for OSV queries, so redis-py advisories were attributed to the server. The decision-policy evaluation (`evaluation/`) found it; the conformance oracle could not, because it takes identity as given.
+  - A package with a stated ecosystem now resolves through curated (ecosystem, name) mappings: the new `packages` list on catalog entries, plus their `osv` block.
+  - A name that only shares an alias with a project whose packages are curated is now unresolved (RELATED), never that project.
+  - Packages with no ecosystem (or purl's `generic`) resolve by name as before.
+  - redis-py and node-redis are curated as their own projects, so PyPI and npm `redis` now have no association with Redis server events.
+  - Redis declares no packages, and OSV queries for PyPI `redis` now go to `redis-py`.
+
 
 **This changes verdicts.** All of the following could report NOT_AFFECTED (a clearance) for a dependency that is in an event's scope. They were found by the conformance audit in technical report TR-2026-01.
 

@@ -96,7 +96,7 @@ MUTANTS = [
         "unmapped references are unrelated",
         "core.risk.match",
         "_unresolved_identity",
-        """    if trust["via"] != "self":
+        """    if trust["via"] != "self" or UNRESOLVED_IDENTITY.get() == "unrelated":
         return None""",
         """    if True:
         return None""",
@@ -154,10 +154,12 @@ MUTANTS = [
         "unmapped packages are unrelated",
         "core.risk.check",
         "_scope_cause",
-        """        if trust["via"] != "self":
-            return None  # curated as another project: no association""",
-        """        if True:
-            return None  # curated as another project: no association""",
+        """        not unresolved or UNRESOLVED_IDENTITY.get() == "unrelated"
+    ):
+        return None  # curated as another project: no association""",
+        """        True
+    ):
+        return None  # curated as another project: no association""",
     ),
     (
         "D14",
@@ -179,7 +181,7 @@ MUTANTS = [
         "N4-withdrawn",
         "withdrawn and superseded events are evaluated",
         "core.risk.check",
-        "check_dependency",
+        "_check_dependency",
         "    events = [event for event in events if event.is_current_record()]",
         "    events = list(events)",
     ),
@@ -198,6 +200,30 @@ MUTANTS = [
         "inadmissible_reason",
         '    if any(e.relation == "contradicts" for e in event.evidences):',
         "    if False:",
+    ),
+    (
+        "F2",
+        "a project package element is ignored",
+        "core.risk.check",
+        "_scope_cause",
+        "        if event.project_slug.lower() in {str(p).lower() for p in scope.packages}:",
+        "        if False:",
+    ),
+    (
+        "F3",
+        "an ecosystem-qualified value matches by name alone",
+        "core.risk.check",
+        "_qualified_results",
+        "        elif key == mine:",
+        "        elif key[1] == mine[1]:",
+    ),
+    (
+        "F4",
+        "a self-resolved package named like the project is the project",
+        "core.risk.check",
+        "_scope_cause",
+        "    if slug != event.project_slug or unresolved:",
+        "    if slug != event.project_slug:",
     ),
     (
         "Package",

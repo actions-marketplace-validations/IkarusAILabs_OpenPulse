@@ -10,9 +10,102 @@
 
 Use this framing without claiming that the combined model is already proven. The combined assurance experiment is hypothesised, not established.
 
-Status (2026-10-28): v0.7.0 "Channels" released (MCP server for AI coding agents, DefectDojo export, Dependency-Track upload, release-line verdict fix #133, install name `ikarus-openpulse`); v0.7.1 adds collector response caps (#155) and hash-locked installs (#156); Phase A correctness and leak fixes merged (#112, #113, #115–#120); intelligence schema 0.5.0, evidence contract v1.1, CI on Linux + Windows, deterministic SBOM archived. Test count is reported by CI. Next phases: `docs/NEXT_PHASES.md`. This reset supersedes the 2026-10-02 M1–M8 sequence: the milestones below re-baseline it against implementation reality and the research programme, they do not discard it.
+Status (2026-10-30): research track R (below) takes precedence until the TR-2026-01 journal submission. Earlier status (2026-10-28): v0.7.0 "Channels" released (MCP server for AI coding agents, DefectDojo export, Dependency-Track upload, release-line verdict fix #133, install name `ikarus-openpulse`); v0.7.1 adds collector response caps (#155) and hash-locked installs (#156); Phase A correctness and leak fixes merged (#112, #113, #115–#120); intelligence schema 0.5.0, evidence contract v1.1, CI on Linux + Windows, deterministic SBOM archived. Test count is reported by CI. Next phases: `docs/NEXT_PHASES.md`. This reset supersedes the 2026-10-02 M1–M8 sequence: the milestones below re-baseline it against implementation reality and the research programme, they do not discard it.
 
-Status words used in this document: DONE, ACTIVE, VALIDATION, NEXT, FUTURE, RESEARCH. Research claims are additionally qualified as observed, implemented, validated, hypothesised, or planned — hypotheses are never described as established capabilities.
+Status words used in this document: DONE, ACTIVE, VALIDATION, NEXT, FUTURE, RESEARCH, PAUSED. Research claims are additionally qualified as observed, implemented, validated, hypothesised, or planned — hypotheses are never described as established capabilities.
+
+## Re-baseline 2026-10-30: research track R takes precedence
+
+An external recommendation on TR-2026-01 (assessment: `papers/tr-2026-01/RECOMMENDATION_ASSESSMENT.md`) concludes that the report is a sound specification and implementation audit, but not yet a competitive journal submission. Its missing piece is evidence that completeness-aware decisions are *better* than simpler alternatives. We accept that conclusion. Until the journal submission, **track R below is the priority**. Everything else is either a prerequisite for R or waits.
+
+- Target: "Level 2", an empirically strengthened manuscript. It needs a precise contribution, independent validation, labelled historical cases and a comparative evaluation. Level 3 (multiple ecosystems, longitudinal and practitioner studies) is not a prerequisite.
+- TR-2026-01 itself may be published now as a technical report, with its claims as they stand. The journal version waits for R-C.
+- Rule for R: build only what an experiment needs. Every R item names the research question it serves. Product features that serve no R question wait.
+
+### R-A — Research design (contribution and protocol)
+STATUS: ACTIVE
+
+- [ACTIVE] **R-A1:** State the contribution as a testable model: when a negative applicability verdict is justified (scope typing, completeness with a basis, exact vs envelope, identity, freshness). Claim the model and its evaluation. Do not claim completeness reasoning or three-valued logic as new.
+- [ACTIVE 2026-10-30, waiting on the author to archive] **R-A2:** The registration is drafted in `evaluation/REGISTRATION.md`, and the registered analysis is implemented in `evaluation/registration.py`, with frozen constants and tests.
+  - **Primary:** C vs B. H1 is safety: event-level false-clear share, δ 0.05, ≥ 60 events. H2 is a resolution gain of ≥ 0.10.
+  - **Secondary**, Holm-corrected: C vs V equivalence within ±0.05; A vs C false clears.
+  - **Guardrails:** silent misses ≤ 0.02; unresolved ≤ B + 0.05; per-class flag above 0.60.
+  - **The change from the draft:** making V secondary is disclosed.
+  - **Remaining, for the author:** complete the fields marked "to fill at archiving" (registry, date, freeze tag, window start, annotators, stopping number, per-class inclusion criteria), then archive on OSF Registries or Zenodo before any held-out label exists.
+- [NEXT] **R-A3:** Widen related work on vulnerability applicability and VEX/CSAF consumption, SBOM accuracy, package identity (purl, cross-ecosystem naming), dependency management and AI package recommendation. Each comparison must answer one question: what can a consumer do with the model that it could not do reliably before?
+
+### R-B — Minimal OpenPulse enhancements the experiments need
+STATUS: ACTIVE
+
+- [DONE 2026-10-30] **R-B1:** Evaluation harness (`evaluation/`). It provides:
+  - decision policies A-naive, B-conservative and C-openpulse;
+  - input-transform ablations of completeness and freshness;
+  - the recommendation's metrics: false clears, FCR_affected and FCR_clear, silent misses, false impact, resolution, abstention, unsupported decisiveness and evidence completeness;
+  - replay of recorded evidence as known at a date (`replay.py`).
+- [DONE 2026-10-30] **R-B2:** Labelled development set, `evaluation/cases/dev-2026-10.json`: 60 pairs over 13 events, each label with a rationale and a source. It tests the harness and is not evaluation evidence.
+- [DONE 2026-10-30] **R-B3:** Fixed evaluation finding **F1**. Package identity resolved by name across ecosystems, so redis-py (PyPI `redis`) was AFFECTS_VERSION under Redis server end of life. Package identity is now per ecosystem (catalog `packages` lists plus `osv` blocks), and redis-py and node-redis are curated as their own projects. No golden flipped. Follow-up done 2026-10-30: every catalog entry now curates its `packages`, and a hygiene test requires it.
+  - Libraries list the packages that are the project (Maven coordinates included).
+  - Servers and tools declare none, so a same-named client package (PyPI `kubernetes`, npm `mongodb`, npm `angular`) is unresolved.
+- [DONE 2026-10-30] **F2:** A package-scope rule that was outside the specification is now specified as the *project package element*: a package-scope value naming the event's own project denotes every package curated as that project.
+  - It is exact. It gives **M** for curated identity, **0** for other projects, and **?** for unresolved identity.
+  - It is in SPEC §4.4, the team oracle and baseline V. The conformance vocabulary now includes `redis-server`, a package whose name is not its project's slug, and a new F2 mutant is caught by the matrix and the random cases.
+  - Package names also compare in canonical form: Maven `group:artifact` = `group/artifact`, and PEP 503 for PyPI.
+  - TR §5.3 needs the matching sentence (proposed in the PR).
+- [DONE 2026-10-30] **F3:** Package-scope values may now be ecosystem-qualified purls (`pkg:pypi/redis`), with no schema change, since `Scope.packages` is a list of strings.
+  - A qualified value names exactly one package and decides on (ecosystem, canonical name) before identity: **M** when equal, **N** for another ecosystem, **?** otherwise.
+  - Bare values decide on identity first, and SPEC §4.4 is now aligned with the engine.
+  - It is in the engine, the team oracle, baseline V and the kit (dependencies may state an ecosystem). The matrix and generators gained packages with stated ecosystems and qualified values. A new F3 mutant (qualified values matched by name alone) is caught.
+  - Producers should qualify package values; the curated fixtures still use bare names.
+- [DONE 2026-10-30] **F4:** A package that resolves only to itself is now unresolved (RELATED) even when its name equals the event's project. It is never excluded by version and never counted as the project. This is the package-side twin of D10.
+  - Real relocation events were affected, not just test fixtures: capa and react-native-fbsdk were not in the catalog, so bare package names matched their projects by coincidence. Both are now curated: capa with PyPI `flare-capa`, react-native-fbsdk with npm `react-native-fbsdk`. Their goldens are unchanged.
+  - `tests/test_false_clear.py` curates its `acme` stand-in in a fixture instead of relying on the name. One security-chain test is flipped, with its justification.
+  - The randomised generator has an uncatalogued event project (`zzzpkg`). A new F4 mutant is caught by the random cases and a regression test.
+- [DONE 2026-10-30] **R-B4:** Strong conservative baseline V (`evaluation/strong_baseline.py`): the same typed scopes, admissibility and curated identities as C, exact identity only, `packaging` for PyPI, and plain numbers elsewhere. On the development set it differs from C on 1 of 60 pairs, so the contribution to claim is the model, not the engine.
+  - Comparators pinned 2026-10-30, through bridges to the real tools: node-semver 7.8.5, x/mod v0.42.0, maven-artifact 3.9.16 (`evaluation/comparators/`).
+  - The registered run refuses without them (`--require-comparators`), and CI's `comparators` job runs them against documented semantics.
+  - `crosscheck.py` compares OpenPulse's own comparator with them.
+  - dpkg is out of scope: no `pkg:deb` reader exists.
+- [DONE 2026-10-30] **R-B5:** Identity ablation as an explicit, call-scoped engine parameter: `check_dependency(unresolved_identity="unrelated")`. On the development set it cuts abstention from 0.47 to 0.18 at the cost of silent misses on 3 of 27 in-scope pairs, which is the measured coverage cost of D10.
+- [DONE 2026-10-30] **R-B6:** Decisions expose their limitations. Evidence contract 1.2.0 adds `verdict_meaning` (direct scope, plus embedded components, availability, maintenance and security consequence, all `not_evaluated`, and a fixed statement with no upstream text), `scope.completeness` (state, basis, admits_negative) and `evaluation_context` (freshness bound and identity policy). The MCP response carries the same `verdict.meaning`, and its fixed note now qualifies NOT_AFFECTED too. The evaluation's evidence-completeness metric reads these contract fields. The JCS hash moves to contract 2.0.0, because hash changes are breaking under the versioning policy.
+- [ACTIVE 2026-10-30, waiting on an outside author] **R-B7:** Independent specification check. The kit is ready in `conformance/independent/`:
+  - `SPEC.md`: the decision rules, self-contained;
+  - `README.md`: the process, deliverables, case format, attestation and adjudication;
+  - `vocabulary.json`: the references a case may use;
+  - `kit.py`: `export` (seeded random cases), `validate` (fails closed), and `compare` (expected, independent oracle, team oracle and implementation side by side, with severities, and judgement-vs-rules conflicts listed as candidate specification defects).
+
+  A throwaway oracle written from SPEC.md alone agreed with both team sources on 20,000 exported cases, so the text has no transcription errors that random cases expose. That is not independent evidence. Next: recruit the author, agree the export seed, and publish the submission and its adjudication.
+- [LATER, only if R-C needs it] Ecosystem expansion beyond the current three change classes on two platforms.
+
+### R-C — Empirical evaluation
+STATUS: NEXT (blocked on archiving the R-A2 registration, and on annotators)
+
+- [ACTIVE 2026-10-30, design awaiting approval] **R-C0:** Retrospective study on real historical changes. It answers the recommendation's Priority 2. It is exploratory, reported separately, and never pooled with the registered result.
+  - Rules: `evaluation/retrospective/DESIGN.md`. Screened candidates: `evaluation/retrospective/SHORTLIST.md`, with 27 of 33 included or provisional across 6 classes.
+  - The implementation is frozen at `retro-freeze-2026-10-30`.
+  - Next, after approval: fill the gaps (relocation, end of life), build the fixtures, sample dependents, label (with a 25% outside sample), freeze the case file, run, and report.
+- **R-C1:** Held-out event set. Sample from sources that do not feed OpenPulse, with per-class inclusion criteria fixed first, over a window after the implementation freeze. A prospective window is preferred: OpenPulse cannot replay registry state it never recorded, and reconstructing past state from today's state invites hindsight bias. Retrospective events are admitted only with archived contemporaneous evidence.
+- **R-C2:** Independent labels. Two annotators outside the detector's development, adjudication by a third, and Cohen's κ. Undeterminable is a first-class label. This needs external collaborators (see Availability and Collaboration in the report) and is the schedule's critical path.
+- **R-C3:** Comparison. Run A, B, the strong baseline v and C, plus the ablations (completeness, freshness, identity, the gate), with event-clustered intervals and stratification by event class, identity status and completeness basis. Include error analysis of every wrong or unresolved decision.
+- **R-C4:** Discovery on historical changes. Report precision, and recall against an independent reference set only where a defensible ground truth exists. Report scope-construction and identity-resolution accuracy separately from decision accuracy. Name the classes with no reliable ground truth.
+- Pre-commitment: the result decides the claim. "Fewer false clears at the cost of more abstentions" and "no better than the strong baseline" are both reportable outcomes. Neither is repaired by adding features.
+
+### R-D — Paper revision and submission
+STATUS: FUTURE (after R-C)
+
+- **R-D1:** Rewrite the introduction and contributions around the demonstrated gap. Every major claim cites an R-C result or is removed.
+- **R-D2:** Reproducibility package: a tagged, archived release (DOI) containing the dataset with its SHA-256, the protocol version, the harness, raw results, ground-truth construction notes, and examples of wrong and unresolved decisions.
+- **R-D3:** Choose the venue from the finished contribution, not before.
+
+### What track R pauses or defers
+
+| Work | Disposition | Reason |
+|---|---|---|
+| M6 SaaS surfaces, dashboards, notifications, delivery state | PAUSED | Product maturity is not evidence. Resume after R-D. |
+| M7 Intelligence Network | FUTURE (unchanged) | |
+| M9, and SafeAI integration in this paper | DEFERRED | It widens scope and complicates attribution. It stays a separate future study. |
+| v0.8.0 Anchored Trust (keyed history, external anchoring) | NEXT after R-C | Needed for lead-time claims. The applicability evaluation does not rest on them. The paper keeps lead times as caveated observations. |
+| E1–E5 external developments | E5 (comparator runs) folded into R-C3; E1–E4 LATER | |
+| Security-review items (Phase B in `docs/NEXT_PHASES.md`) | Continue only where they fix a false clear or false impact | |
 
 ## Product thesis (kept)
 
@@ -143,7 +236,7 @@ ACTION
 Shipped: YAML watchlists, CycloneDX + SPDX SBOM input (`core/sbom_reader.py`), container image inventories (`core/image_inventory.py`), lockfile input - package-lock.json/poetry.lock/Cargo.lock (`core/lockfile_reader.py`), package manifests - requirements.txt/pyproject.toml/pom.xml/go.mod/Cargo.toml (`core/manifest_reader.py`), and GitHub repository input (`core/github_reader.py`). All inputs converge on the same canonical identity and applicability semantics — never a second matching engine, never generic SCA coverage-chasing. GitHub inspection is bounded, commit-pinned, and reports partial/unsupported coverage rather than treating absence as proof of no dependencies.
 
 ## M6 — Early Warning SaaS
-STATUS: ACTIVE / OPERATIONALIZATION
+STATUS: PAUSED 2026-10-30 for track R (was ACTIVE / OPERATIONALIZATION)
 
 Continuous monitoring, alerts, digests, dashboards, warning deadlines, first-detection history, event timeline, CI/PR checks. Implemented foundation: durable per-entity first-detection ledger (`core/detections/ledger.py`), lead time defined as `effective_date − first_trustworthy_detection`, never estimated, never averaged for marketing; alert digest (`core/digest.py`) and ranked warning deadlines with severity bands (`core/warnings.py`), plus replayable lead-time case studies (`docs/LEAD_TIME_CASES.md`). Commercial question stays: “What is changing in MY software?”
 
@@ -160,7 +253,7 @@ Implemented (2026-10-24): an MCP server lets coding agents query dependency evid
 Research question: how should dependency intelligence change when AI agents increasingly select, introduce, upgrade and remove software dependencies? OpenPulse contributes dependency intelligence + applicability + evidence + temporal context; SafeAI contributes agent authority + change + authority evidence. Do NOT put an AI agent in the trusted decision path; study the evidence question first.
 
 ## M9 — Evidence-Based Assurance for AI-Mediated Software Change
-STATUS: RESEARCH / FUTURE (flagship experiment, hypothesised)
+STATUS: RESEARCH / FUTURE (flagship experiment, hypothesised); DEFERRED out of the TR-2026-01 journal version
 
 Can agent-authority evidence and dependency evidence be combined into safer, more explainable decisions? Compare dependency-only (OpenPulse) vs authority-only (SafeAI) vs combined evidence (+ deterministic policy) on: unsafe changes detected, false positives/negatives, unnecessary reviews, decision explainability, evidence completeness, unknown conditions, reproducibility, human decision effort. None of this is proven; the experiment is the point.
 
@@ -228,12 +321,15 @@ Considered and not adopted: dependency-discovery benchmarking (inventory generat
 - DONE 2026-10-21: v0.6.1 correctness slice - namespaced pom.xml (#112), registry-port identity (#113), webhook secret redaction (#115), OS advisory locks (#116), GitHub-repo SBOM ingestion (#117), bounded reads (#118), identifier validation (#119), `SECURITY.md` (#120), certifi PYSEC-2026-4320.
 - DONE 2026-10-28: collector response caps (A6b, #155) and hash-locked installs (#110, #156). NEXT: v0.8.0 Anchored Trust before M6 runs unattended - see `docs/NEXT_PHASES.md`.
 
-## Next 90 Days (reconciled 2026-10-21)
+## Next 8–16 weeks (re-baselined 2026-10-30; supersedes the 2026-10-21 list)
 
-1. ~~v0.6.1 correctness/leak fixes~~ DONE 2026-10-21; ~~collector response caps (A6b)~~ DONE in v0.7.1.
-2. v0.8.0 Anchored Trust (M1 requirement, not expansion) — derived source authority, derived independence, keyed history integrity with rollback detection and external anchoring, portable (JCS) contract hashing. Lead-time claims cite keyed-valid detections only.
-3. Early-warning operationalization (M6) — persistent delivery state, deterministic deduplication/retry policy, DNS-pinned webhook transport, CI/PR integration. Builds on item 2.
-4. Real non-lifecycle discovery (M2) — a live namespace-move pair for `split_moves`; repository/archive and support/license candidates per the backlog.
-5. Benchmark harness (M4) and release supply chain — per-scenario reproducibility package; hash-pinned lock, signed releases with provenance.
+This is a planning estimate, not a commitment: independent labelling and ground-truth construction may take longer.
+
+1. **Weeks 1–2:** publish TR-2026-01 as a technical report with its current claims. Register the protocol (R-A2). Fix F1 (R-B3). Build the strong baseline (R-B4) and the identity ablation (R-B5). Recruit annotators and an independent oracle author (R-B7, R-C2).
+2. **Weeks 2–6:** contract negative-meaning fields (R-B6). Independent oracle and edge-case set (R-B7). Freeze the implementation and tag it. Start the prospective event window (R-C1).
+3. **Weeks 6–12:** independent labelling (R-C2), the comparison and ablations (R-C3), discovery precision and recall (R-C4).
+4. **Weeks 12–16:** paper revision and reproducibility package (R-D).
+
+Superseded items from the 2026-10-21 list: v0.8.0 Anchored Trust moves after R-C. M6 operationalisation is PAUSED. The M4 benchmark harness is superseded by R-B1, the evaluation harness. Real non-lifecycle discovery (M2) continues only where it feeds R-C1.
 
 Do not add unrelated features. This roadmap exists to stop OpenPulse from becoming a feature-rich data aggregator and instead drive it toward a defensible dependency-intelligence product and a credible research instrument.

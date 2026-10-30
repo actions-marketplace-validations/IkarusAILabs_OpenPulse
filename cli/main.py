@@ -880,13 +880,19 @@ def _load_check_inputs(
     loaded_events = [_load_event(path) for path in events]
     bundles = {}
     if raw_bundle_dir:
+        from core.entities.identity import package_trust
+
         for dep in deps:
             if dep["kind"] != "package":
                 continue
-            slug = _resolve(dep["package"])
-            bundle = _Path(raw_bundle_dir) / f"{slug}.json"
-            if bundle.exists():
-                bundles[slug] = _load_bundle(bundle)
+            # The security stream reads bundles under the package's trust
+            # slug (PyPI `redis` -> `redis-py`); a file named by the plain
+            # resolution is still accepted, stored under that same key.
+            slug = package_trust(str(dep["package"]), dep.get("ecosystem"))["slug"]
+            for name in dict.fromkeys((slug, _resolve(dep["package"]))):
+                bundle = _Path(raw_bundle_dir) / f"{name}.json"
+                if slug and name and bundle.exists() and slug not in bundles:
+                    bundles[slug] = _load_bundle(bundle)
     if not deps:
         raise click.ClickException(
             "no checkable dependencies (watchlist/SBOM/lockfile/manifest/images yielded nothing)"
@@ -1771,3 +1777,116 @@ def sweep(store, projects, out):
 
         _Path(out).write_text(_json.dumps(result["findings"], indent=2), encoding="utf-8")
         _echo(f"wrote {out}")
+
+
+@cli.command()
+@click.option("--watchlist", type=click.Path(exists=True), help="Watchlist YAML file")
+@click.option("--sbom", type=click.Path(exists=True), help="CycloneDX SBOM (JSON)")
+@click.option("--spdx", type=click.Path(exists=True), help="SPDX SBOM (JSON, 2.x)")
+@click.option("--images", type=click.Path(exists=True), help="Container image inventory")
+@click.option(
+    "--lockfile", type=click.Path(exists=True), help="package-lock.json / poetry.lock / Cargo.lock"
+)
+@click.option(
+    "--manifest",
+    type=click.Path(exists=True),
+    help="requirements.txt / pyproject.toml / pom.xml / go.mod / Cargo.toml",
+)
+@click.option(
+    "--github-repo", "github_repo", type=str, default="", help="GitHub repository to inspect"
+)
+@_github_auth_options
+@click.option(
+    "--out",
+    required=True,
+    type=click.Path(file_okay=False),
+    help="Directory for discovered event JSON (pass each to check --event)",
+)
+@click.option(
+    "--max-targets",
+    default=200,
+    show_default=True,
+    type=click.IntRange(min=1),
+    help="Probe at most this many repositories/images (GitHub's anonymous quota is 60/hour)",
+)
+@click.option(
+    "--max-packages",
+    default=500,
+    show_default=True,
+    type=click.IntRange(min=1),
+    help="Query OSV for at most this many packages",
+)
+def discover(
+    watchlist,
+    sbom,
+    spdx,
+    images,
+    lockfile,
+    manifest,
+    github_repo,
+    github_token,
+    github_token_file,
+    out,
+    max_targets,
+    max_packages,
+):
+    """Inventory-driven discovery: probe the repositories and images your
+    dependencies name, and write the events their changes support.
+
+    Targets come from the dependencies, not the catalog: Go module paths
+    (github.com, gopkg.in, golang.org/x), github.com references and
+    Docker Hub images. Every npm, PyPI, Maven, Go and crates.io package is
+    also queried on OSV by its own name, so malicious and compromised
+    versions are decided without a catalog entry; those advisories are
+    written as bundles under OUT/bundles. Anything else is listed as
+    unmapped with its reason. This is the networked step; check stays
+    offline on what it writes.
+    """
+    import re as _re
+    from pathlib import Path as _Path
+
+    from core.discovery import discover as _discover
+    from core.github_reader import get_github_token
+
+    if github_token:
+        _echo(
+            "warning: --github-token is deprecated; use GITHUB_TOKEN or "
+            "--github-token-file instead",
+            err=True,
+        )
+    try:
+        token = get_github_token(github_token, github_token_file)
+    except OSError as exc:
+        raise click.ClickException(f"cannot read GitHub token file: {exc.strerror or exc}") from exc
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    deps, _events, _bundles, _inspections = _load_check_inputs(
+        watchlist, sbom, spdx, images, lockfile, manifest, github_repo, token, (), None
+    )
+    result = _discover(deps, token, max_targets=max_targets, max_packages=max_packages)
+    _echo(
+        f"discover: {len(deps)} dependency(s) -> {len(result.targets)} target(s), "
+        f"{len(result.unmapped)} unmapped"
+    )
+    for label, reason in result.unmapped:
+        _echo(f"! unmapped: {label}: {reason}")
+    if result.skipped_targets:
+        _echo(f"! not probed: {len(result.skipped_targets)} target(s) over --max-targets")
+    for target, message in result.errors:
+        _echo(f"! error: {target.kind} {target.name}: {message}")
+    directory = _Path(out)
+    directory.mkdir(parents=True, exist_ok=True)
+    for event in result.events:
+        name = _re.sub(r"[^A-Za-z0-9._-]+", "_", event.id) + ".json"
+        (directory / name).write_text(event.model_dump_json(indent=2), encoding="utf-8")
+        _echo(f"- [{event.event_type.value}] {event.title} -> {directory / name}")
+    _echo(f"{len(result.events)} event(s) written to {directory}")
+    bundle_dir = directory / "bundles"
+    for slug, raw in sorted(result.bundles.items()):
+        path = bundle_dir / f"{slug}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+    _echo(
+        f"osv: {result.advisories} advisory record(s) for {len(result.bundles)} package(s)"
+        + (f" -> check --raw-bundle-dir {bundle_dir}" if result.bundles else "")
+    )

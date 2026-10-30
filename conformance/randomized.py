@@ -39,7 +39,7 @@ DIGESTS = ["sha256:" + c * 64 for c in "abc"]
 PROJECTS = {
     "redis": {
         "repos": ["docker.io/library/redis", "docker.io/redis"],
-        "packages": ["redis"],
+        "packages": ["redis", "redis-server"],  # a name that is not the slug (F2)
         "lines": ["6", "6.2", "7", "7.2", "8"],
     },
     "mysql": {
@@ -47,17 +47,37 @@ PROJECTS = {
         "packages": ["mysql"],
         "lines": ["5.7", "8", "8.0"],
     },
+    # An event project that is not in the catalog (F4): a package named like
+    # it resolves only to itself, so its identity is unresolved.
+    "zzzpkg": {
+        "repos": [],
+        "packages": ["zzzpkg"],
+        "lines": ["1"],
+        "curated": False,
+    },
 }
 UNMAPPED_REPOS = ["docker.io/zzz/kvstore", "ghcr.io/zzz/redis"]
 #: Curated as a third project (bitnami-redis-stack): "other" to both.
 CURATED_OTHER_REPOS = ["docker.io/bitnami/redis"]
 UNMAPPED_PACKAGES = ["zzzpkg", "redis-py"]
+#: Packages with a stated ecosystem and their curated project (None: unmapped).
+#: The same name is a different project in each ecosystem (F1, F3).
+ECOSYSTEM_PACKAGES = {
+    ("PyPI", "redis"): "redis-py",
+    ("npm", "redis"): "node-redis",
+    ("PyPI", "mysql"): None,
+    ("PyPI", "zzzpkg"): None,
+}
+#: Ecosystem-qualified package-scope values (F3).
+QUALIFIED_VALUES = ["pkg:pypi/redis", "pkg:npm/redis", "pkg:pypi/mysql", "pkg:maven/com.acme/redis"]
 TAGS = [None, "latest", "7.2", "7.2.4", "7.2.4-alpine", "8.0", "6.2.1-debian-12-r3", "5.7.44"]
 PKG_VERSIONS = [None, "7.2.0", "8.1", "6.2.14", "5.7.1"]
 
 
 def _owner(ref_or_package: str) -> str | None:
     for slug, p in PROJECTS.items():
+        if not p.get("curated", True):
+            continue
         if ref_or_package in p["packages"]:
             return slug
         base = ref_or_package.split("@")[0].rsplit(":", 1)[0] if "/" in ref_or_package else ""
@@ -76,6 +96,14 @@ def random_dependency(rng: random.Random) -> dict:
             tag = rng.choice(TAGS)
             ref = repo if tag is None else f"{repo}:{tag}"
         return {"kind": "image", "ref": ref}
+    if rng.random() < 0.3:
+        ecosystem, package = rng.choice(list(ECOSYSTEM_PACKAGES))
+        return {
+            "kind": "package",
+            "package": package,
+            "ecosystem": ecosystem,
+            "version": rng.choice(PKG_VERSIONS),
+        }
     package = rng.choice([n for p in PROJECTS.values() for n in p["packages"]] + UNMAPPED_PACKAGES)
     return {"kind": "package", "package": package, "version": rng.choice(PKG_VERSIONS)}
 
@@ -106,7 +134,8 @@ def random_event(rng: random.Random, index: int) -> dict:
     elif kind == "version":
         values = rng.sample(PROJECTS[slug]["lines"], min(size, len(PROJECTS[slug]["lines"])))
     elif kind == "package":
-        values = rng.sample(PROJECTS[slug]["packages"] + ["other-pkg"], 1 + (size > 2))
+        pool = PROJECTS[slug]["packages"] + ["other-pkg", "zzzpkg"] + QUALIFIED_VALUES
+        values = rng.sample(pool, 1 + (size > 2))
     elif kind == "registry":
         values = [rng.choice(["docker.io", "ghcr.io"])]
     else:
@@ -133,6 +162,11 @@ def random_event(rng: random.Random, index: int) -> dict:
 def _identity(dep: dict, slug: str) -> str:
     if dep["kind"] == "image" and dep["ref"].split("@")[0].rsplit(":", 1)[0] in CURATED_OTHER_REPOS:
         return "other"
+    if dep.get("ecosystem"):
+        owner = ECOSYSTEM_PACKAGES[(dep["ecosystem"], dep["package"])]
+        if owner is None:
+            return "unresolved"
+        return "project" if owner == slug else "other"
     owner = _owner(dep["ref"] if dep["kind"] == "image" else dep["package"])
     if owner is None:
         return "unresolved"
@@ -159,6 +193,7 @@ def oracle_verdict(dep: dict, ev: dict) -> str:
         package=dep.get("package", ""),
         version=dep.get("version"),
         identity=_identity(dep, ev["slug"]),
+        ecosystem=dep.get("ecosystem", ""),
     )
     event = oracle.Event(
         ev["slug"],
@@ -254,7 +289,9 @@ def run(cases: int, seed: int) -> dict:
         dep = random_dependency(rng)
         events = [random_event(rng, i) for i in range(rng.randint(1, 3))]
         spec = [oracle_verdict(dep, ev) for ev in events]
-        impl_dep = dep if dep["kind"] == "image" else {**dep, "ecosystem": "PyPI"}
+        # Packages without an ecosystem are identified by name (PROJECTS);
+        # with one, by ECOSYSTEM_PACKAGES, as the catalog curates them.
+        impl_dep = dep if dep["kind"] == "image" else {"ecosystem": "", **dep}
         verdict = check_dependency(
             impl_dep,
             [implementation_event(ev) for ev in events],
