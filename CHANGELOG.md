@@ -6,6 +6,12 @@ All notable changes to OpenPulse. Versions follow semver; while the project is `
 
 ### Added
 
+- **Evaluation: the registration amendments of 2026-10-30, implemented** (`evaluation/REGISTRATION.md` §2, §4, §5, §5a). This adds:
+  - policy R, the existing-representation baseline: written rules for encoding an event as OSV or OpenVEX (`evaluation/representations/ENCODING.md`), and a careful consumer (`evaluation/existing_representation.py`) with exact purl identity and V's pinned comparators. Each event's encoding is frozen by SHA-256 in the case set, and `run.py --require-encodings` refuses an event without one;
+  - test S3 (C − R, Holm-corrected with S1 and S2), guardrail G4, and the attribution steps B→R→V→C;
+  - the review-burden measures W1–W3 (`run.py --inventories`) and the reliability measures D1–D2 (`--annotations`).
+
+  Six development-set events are encoded (dataset revision 2026.10.30-3), so R's numbers there are illustrative only. No OpenPulse verdict changes.
 - **Ecosystem-qualified package scopes (F3).** A package-scope value may be a purl without a version (`pkg:pypi/redis`). It names exactly one package: a dependency of that ecosystem and name is AFFECTS_PACKAGE whatever its curated project, a package of another ecosystem is excluded (only from a scope declared complete with a basis), and anything unreadable is undetermined. Bare values keep working and are read through curated identity.
 - **Evidence contract 1.2.0: what a verdict does and does not assert** (TR-2026-01 sections 5.1-5.2, ROADMAP R-B6). Every document now carries three new things:
   - `verdict_meaning`: direct scope membership as a closed vocabulary; embedded components, availability, maintenance and security consequence marked `not_evaluated`; and a fixed statement with no upstream text;
@@ -13,6 +19,7 @@ All notable changes to OpenPulse. Versions follow semver; while the project is `
   - `evaluation_context`: whether a freshness bound was applied.
 
   `openpulse attest` emits 1.2. The 1.1 and 1.0 schemas are unchanged and their documents still validate and verify. **Upgrade note:** a consumer that validates against the 1.1 schema must switch to `schemas/evidence-contract/v1.2/schema.json`, because a 1.2 document fails 1.1 validation (`additionalProperties: false`).
+- **MCP answers bound evidence age (TR-2026-01 N4).** This changes verdicts. `dependency_status` and `check_dependency_file` now run in a current-assessment mode: a negative needs evidence fetched within 90 days (configurable) of now, so a stale event can associate a dependency but no longer clear it. Answers carry an `evaluation_context` block (contract 1.2 fields plus `mode`), and every cause carries its `scope_completeness`. An explicit replay mode (Python API only) disables the bound and says so in `evaluation_context`, `not_established` and `note`.
 - **MCP responses state verdict meaning.** `verdict.meaning` carries the same closed vocabularies, every cause carries `direct_scope`, and the fixed note now says that NOT_AFFECTED is not a clearance either.
 
 ### Fixed
