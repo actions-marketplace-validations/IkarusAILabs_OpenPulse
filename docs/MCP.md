@@ -9,10 +9,12 @@ AI coding agents add, upgrade and pin dependencies faster than anyone reviews th
 
 Every answer is evidence, not a decision. It names its sources, lists what it could not establish, and never presents UNKNOWN as safe. The agent and its human decide what to do.
 
+> **Research software.** OpenPulse is an academic research instrument from [Ikarus AI Labs](https://ikaruslabs.net), not a commercial product or a security control. Agent behaviour with these tools has not been evaluated. See [Research status](../README.md#research-status).
+
 ## Install
 
 ```bash
-pip install "ikarus-openpulse[mcp] @ git+https://github.com/IkarusAILabs/OpenPulse@v0.7.1"
+pip install "ikarus-openpulse[mcp] @ git+https://github.com/IkarusAILabs/OpenPulse@v0.8.0"
 openpulse mcp --help
 ```
 
