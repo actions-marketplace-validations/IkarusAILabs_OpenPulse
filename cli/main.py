@@ -755,7 +755,7 @@ def report(
         "Public intelligence describes project-level change; whether it affects "
         "YOUR dependencies needs a watchlist (`openpulse check`).",
     ]
-    if ledger_root and not history_keys:
+    if (ledger_root or with_sweep) and not history_keys:
         from core.digest import UNKEYED_LEAD_TIME_NOTE
 
         notes.append(UNKEYED_LEAD_TIME_NOTE)
@@ -1928,7 +1928,7 @@ def attest(
     import json as _json
     from pathlib import Path as _Path
 
-    from core.evidence_contract import build_v1_contract, validate_v1_contract
+    from core.evidence_contract import build_contract, validate_contract
     from core.risk.check import check_dependency, load_watchlist_doc
 
     has_input = watchlist or sbom or spdx or images or lockfile or manifest or github_repo
@@ -2086,14 +2086,14 @@ def attest(
                 as_of=evaluation.as_of,
                 max_evidence_age=evaluation.max_evidence_age,
             )
-            doc = build_v1_contract(
+            doc = build_contract(
                 event,
                 verdict,
                 inspection_coverage=coverage_override,
                 as_of=evaluation.as_of,
                 max_evidence_age=evaluation.max_evidence_age,
             )
-            problems = validate_v1_contract(doc)
+            problems = validate_contract(doc)
             if problems:
                 # A document OpenPulse itself cannot validate must
                 # never reach a consumer: fail loudly, emit nothing.

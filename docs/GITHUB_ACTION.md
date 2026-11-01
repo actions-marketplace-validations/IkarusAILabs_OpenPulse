@@ -4,7 +4,7 @@ Runs `openpulse attest` on your dependency files in CI. It reports which upstrea
 
 - **Job summary**: a Markdown table in `$GITHUB_STEP_SUMMARY` (verdict, impact, evidence links, contract hash).
 - **SARIF 2.1.0**: a log you can upload to GitHub Code Scanning.
-- **Evidence contracts**: one schema-valid v1.2 JSON document per dependency × event pair (see `docs/EVIDENCE_CONTRACT.md`).
+- **Evidence contracts**: one schema-valid 2.0 JSON document per dependency × event pair (see `docs/EVIDENCE_CONTRACT.md`).
 
 The action needs no install step and no secrets. It runs on Linux, macOS and Windows runners.
 
@@ -63,7 +63,7 @@ On pull requests from forks, the token is read-only and SARIF upload fails. Keep
 Pin the action to a full commit SHA, as `.github/workflows/ci.yml` does for every action it uses:
 
 ```yaml
-- uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.8.0
+- uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.9.0
 ```
 
 The action pins its own dependencies by SHA too: `actions/setup-python` and `github/codeql-action/upload-sarif`.
@@ -95,7 +95,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.8.0
+      - uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.9.0
         with:
           manifest: requirements.txt
           lockfile: poetry.lock
@@ -128,7 +128,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - id: openpulse
-        uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.8.0
+        uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.9.0
         with:
           upload-sarif: 'true'
           fail-on: none            # report, do not fail the scheduled run
