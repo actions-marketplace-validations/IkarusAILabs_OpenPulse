@@ -4,8 +4,64 @@ All notable changes to OpenPulse. Versions follow semver; while the project is `
 
 ## Unreleased
 
+### Upgrade notes
+
+- **A chained observation history with no tip pointer is now refused (v0.9.0 item B4).** It was adopted silently, so a truncated history with its `tip.json` deleted went unnoticed. `observe` and `sweep` now report it as ROLLBACK_SUSPECTED and write nothing. A history saved by an OpenPulse old enough to write no tip is refused the same way. Accept it once, after checking it, with `openpulse observe --namespace <ns> --repo <repo> --rebaseline --reason "..."`.
+- **Lead times now come only from keyed history (v0.9.0 item B3c).** `digest`, `warnings`, `report` and `check` publish a first detection and a lead time only from detection-ledger entries that verify under a history key. **Without `OPENPULSE_HISTORY_KEY` (or `--history-key-file`), no lead time is published**, and the digest, warnings and report say so in a note. Verdicts, deadlines and severities are unchanged. Make a key with `openpulse history-key generate`; the next keyed `check --ledger` run adopts existing entries, and their lead times count from that adoption. The GitHub Action gains its `history-key` input in B3d.
+
+### Added
+
+- **History anchors: `openpulse anchor` and `openpulse verify` (v0.9.0 item B5, finding H2).** They catch deletions that take their own evidence with them, which the store cannot see from inside: a repository's whole history folder (tip included), a ledger entry, the rotation log.
+  - **`openpulse anchor [--out FILE]`** writes a checkpoint with:
+    - each observation history's tip, record count and re-baseline count;
+    - one leaf per ledger entry (`first_seen`, `adopted_at`), plus an RFC 6962 Merkle root over the leaves;
+    - a hash of each rotation-log entry.
+
+    With a history key it is MACed (`key_id`, `mac`). It refuses to write inside `.openpulse/`: keep it in git or as a CI artifact.
+  - **`openpulse verify --anchor FILE`** exits 1 on any violation: an anchored tip no longer in its chain (ROLLBACK), a wiped history (WIPED), a deleted or backdated ledger entry (LEDGER_DELETED, LEDGER_REWRITTEN), a dropped rotation or re-baseline log entry, or an anchor whose MAC fails.
+    - Growth after the anchor is fine.
+    - A re-baseline after the anchor is a notice only when its log entry verifies under the key.
+    - `--require-signed` also refuses an anchor the supplied key did not sign. `--json` prints the result.
+  - **Docs:** `docs/SCHEDULED_CHECKS.md` adds anchoring to the scheduled CI recipe. README, METHODOLOGY and SECURITY now say that local history is tamper-evident with a history key plus anchors kept out of the store, and corruption-detecting without a key.
+- **Rollback and downgrade detection for observation history (v0.9.0 item B4, finding H2).**
+  - **New refusals:** ROLLBACK_SUSPECTED, for a chained history whose tip pointer is missing (before, it was adopted). DOWNGRADE, for an unchained record after chained ones, or an unkeyed record after keyed ones. They join ROLLBACK and BROKEN, and the refusal message says how to re-baseline.
+  - **Explicit re-baseline:** `openpulse observe --rebaseline --reason "..."` (one line, up to 500 characters). A rollback whose remaining chain verifies is accepted at its current tip. A broken or downgraded history, or a tip with no data, is moved to `quarantine-<time>/`, never deleted, and the chain restarts at genesis.
+  - **Logging:** every re-baseline is logged in `rebaselines.json` (time, reason, previous status, accepted tip or quarantine folder), MACed under the history key when one is set. The new record is a baseline: no change claims cross a re-baseline.
+  - **Not covered:** a full wipe of a repository's folder, tip included, still looks like a first run. So does deleting the ledger's `rotations.json`. Detecting those needs an anchor outside the store (B5).
+- **Lead times now come only from keyed history (v0.9.0 item B3c).** `digest`, `warnings`, `report` and `check` publish a first detection and a lead time only from detection-ledger entries that verify under a history key. **Without `OPENPULSE_HISTORY_KEY` (or `--history-key-file`), no lead time is published**, and the digest, warnings and report say so in a note. Verdicts, deadlines and severities are unchanged. Make a key with `openpulse history-key generate`; the next keyed `check --ledger` run adopts existing entries, and their lead times count from that adoption. The GitHub Action is unaffected: it runs `attest`, which neither records nor publishes lead times (corrected in B3d; the B3c note said otherwise). Scheduled CI that runs `check --ledger` needs the key as a secret and a ledger carried between runs: see `docs/SCHEDULED_CHECKS.md`.
+
+### Added
+
+- **Keyed history in scheduled CI, documented (v0.9.0 item B3d).** `docs/SCHEDULED_CHECKS.md` shows how to keep the history key in an Actions secret, carry `.openpulse/` between scheduled runs with `actions/cache`, and rotate the key. B3d was planned as a `history-key` input on the GitHub Action; the Action runs `attest`, which keeps no history, so such an input would do nothing and is not added. It is reconsidered if the Action ever records history.
+- **Keyed adoption of older history (v0.9.0 item B3c, finding H2).** History written before a key existed is adopted, never re-MACed as if it had always been keyed.
+  - **Observations:** unkeyed records followed only by keyed ones now verify VALID_KEYED. The first keyed record's chain hash pins the older records, and `verify_keyed_history` reports its `observed_at` as `adopted_at`. An unkeyed record after a keyed one is still VALID_UNKEYED. A change's `first_detected_at` from a keyed sweep is never earlier than the adoption.
+  - **Ledger:** a keyed write to an unkeyed entry adopts it. It keeps `first_seen` as context, gains `adopted_at` (covered by the MAC), and later keyed writes keep that time. The new `keyed_first_seen(..., keys)` returns the later of `first_seen` and `adopted_at`, and only for a VALID_KEYED entry, with the rotation log applied.
+  - **Readers:** `build_digest`, `build_warnings`, `prepare_report` and `build_report` take `history_keys`. `digest` and `warnings` gain `--history-key-file` and `--history-previous-keys-file`. Without keys they publish no lead time and set `lead_time_note`.
+- **History key rotation (v0.9.0 item B3b, finding H2).** A key can now be retired without losing its history, and a leaked retired key cannot extend it.
+  - Retired keys are verify-only: `OPENPULSE_HISTORY_KEYS_PREVIOUS` (comma- or space-separated) or `--history-previous-keys-file` (one per line, `#` comments) on `observe`, `sweep`, `report` and `check`. They need a current key. New records are always MACed with the current key.
+  - **Observations:** when a history's newest keyed run is under a retired key, the next record is a handover: it carries `previous_key_id` and `handover_mac`, a MAC under the retired key. `verify_keyed_history` now walks keyed runs. A record under the retired key after its handover, a key change without a handover, or a handover that does not follow its key's run is BROKEN. A history keyed with a key that is neither current nor supplied as retired is still refused (`KEY_MISMATCH`).
+  - **Ledger:** an entry under a retired key is verified with it and rewritten under the current key, and the handover is logged once in `rotations.json` at the ledger root, MACed by both keys. `entry_integrity(entry, keys, rotations)` treats an entry under a retired key with a sighting after its rotation as BROKEN. Forged log entries are ignored. Deleting the log cannot be detected locally; B5's external anchors are what detect it (corrected in B4).
+  - Without a key, nothing changes. No golden, fixture or verdict changes.
+- **Keyed history integrity, first slice (v0.9.0 item B3a, finding H2).** Local history used unkeyed SHA-256, so anyone who could write `.openpulse/` could edit a record, recompute its hashes and still verify as VALID.
+  - A history key (`OPENPULSE_HISTORY_KEY`, or `--history-key-file` on `observe`, `sweep`, `report` and `check`) adds an HMAC-SHA256 to every new observation record (`key_id`, `history_mac`, over the chain hash and `first_detected_at`) and every new detection-ledger entry (over its content hash). `openpulse history-key generate` prints a fresh 32-byte key; nothing is written.
+  - New states: VALID_KEYED, VALID_UNKEYED, BROKEN, UNKNOWN (`verify_keyed_history`, `ledger.entry_integrity`). `observe` prints the history's state.
+  - A keyed history is never appended to without its key (`KEY_REQUIRED`, `KEY_MISMATCH`), and a keyed ledger entry is left as it is. Records and entries written before the key stay unkeyed: keyed adoption, with lead times clamped to it, is the next slice (B3c).
+  - A key shorter than 32 bytes, or a key file inside `.openpulse/` or a history store, is refused. The key is never printed or stored in history.
+  - Stdlib only. Without a key, nothing changes. Reports do not yet restrict lead times to keyed history (B3c), and the README keeps calling history corruption-detecting until B3–B5 hold.
+
 ### Fixed
 
+- **Two pages on one site no longer count as two independent sources (v0.9.0 item B2, finding M2).** Independence fell back to the source name, so renamed copies, or different declared families on one site, could reach CORROBORATED.
+  - Each source's URL now gives it a family: its registrable domain (`blog.redis.io` and `redis.io` are both `redis.io`), or the host plus owner on shared hosts (`github.com/bitnami`).
+  - Sources are grouped when their URL families, declared families or names match, or one is `derived_from` the other. A declared family can merge sources but never split one site.
+  - No public-suffix dependency: the registrable domain is the last two labels, or three under a short list of two-level suffixes (`co.uk`, `github.io`, …). An unlisted suffix only makes a family wider, which withholds corroboration and never grants it.
+  - The gate's CORROBORATED rule and `assess_confidence` use the new count. No fixture, golden or dependency verdict changes.
+- **A source's `official` authority is derived, not taken on trust (v0.9.0 item B1, finding M1).** Before, any source that said `authority: official` could carry an event to CONFIRMED.
+  - A source now counts as official only when its URL is https and names a location on the event project's allowlist, in the new `data/official_domains.yaml`. An entry is a host, which also covers its subdomains, or a host with a path, such as `github.com/django`. Shared hosts are only listed with a path.
+  - Lookalike hosts (`evil-redis.io`, `redis.io.evil.com`), `http://`, userinfo, other ports and non-ASCII hosts never match. A project with no entry has no official sources.
+  - A source that fails is read as `secondary`. The gate's CONFIRMED rule and its ACTION/CRITICAL provenance rule read the derived value, and a gate failure names each downgraded source. `assess_confidence` (now taking the project slug) and the lifecycle bridge derive CONFIRMED the same way.
+  - The first allowlist covers the six projects with curated official fixtures: bitnami, bitnami-spark, django, itext, react and terraform. All their fixtures still pass the gate. The synthetic `pypi-package-removal` fixture (`leftpad`) no longer passes `validate --strict`, because its only official source is a GitHub user page.
+  - No dependency verdict changes: `check` reads an event file's stated confidence and does not run the gate.
 - **Detection-ledger stamps are bound to the wall clock (clock trust, finding L7, v0.9.0 item B6).** A lead time is only as trustworthy as the first-detection date behind it.
   - `record_detection` refuses a stamp more than five minutes from UTC wall-clock time, or one that is not an ISO-8601 time, with `ClockSkewError`, and writes nothing. Before, a caller could pass any `detected_at`, including a backdated one or garbage.
   - An entry's `first_seen` is fixed when the entry is created. A re-detection stamped earlier than that is a sighting the ledger never witnessed, so it no longer moves `first_seen` earlier.

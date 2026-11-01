@@ -12,7 +12,12 @@ npm, PyPI, Docker/OCI (initial).
 Sources are not equal. Tiers, strongest first:
 
 - **official** — the vendor/project itself (announcement, changelog,
-  advisory, repo). Alone sufficient for CONFIRMED.
+  advisory, repo). Alone sufficient for CONFIRMED. Derived, never taken
+  on trust: a source counts as official only when its URL is https and
+  names a location on the project's allowlist in
+  `data/official_domains.yaml` (a host and its subdomains, or a host
+  with a path, such as `github.com/django`). Any other source claiming
+  official is read as secondary, and the gate names the reason.
 - **primary** — lifecycle databases (endoflife.date), registries
   serving protocol truth (tag lists, digests). Strong but narrow:
   endoflife.date proves dates, never distribution intent.
@@ -108,8 +113,12 @@ every version whose leading segments equal it (`versions.in_release_line`):
 
 Every claim names supporting evidence (`Claim.evidence_refs`); an
 official-but-unrelated source never satisfies a claim. Corroboration
-counts independent families, folding `derived_from` chains — and the
-monthly report counts families, not labels: NVD + OSV share the
+counts independent families, folding `derived_from` chains. A family is
+also derived from each source's URL: its registrable domain, or the
+host plus owner on shared hosts such as `github.com/bitnami`. Two
+pages on one site are one source, whatever families their producer
+declares; a declared family can merge sources but never split them.
+The monthly report counts families, not labels: NVD + OSV share the
 vuln-data family, and OpenPulse's own correlation never counts as an
 independent source (`source_family_count`,
 `corroborating_family_count`). Contradicting evidence stays visible
@@ -300,13 +309,67 @@ are frozen; concurrent writers serialize on a per-repository OS advisory lock
 (`core/filelock.py`, released by the OS if the holder dies)
 with atomic writes, and history is ordered by chain links, never
 filenames. Threat model: the chain defeats silent corruption,
-partial edits, and fork anomalies, and detects rollback only while
-`tip.json` survives - a deleted tip is adopted, so truncation or a
-full wipe re-baselines silently. It does not resist an adversary who
-recomputes the whole suffix (the hashes are unkeyed; there are no
-secrets in a local-first store). Keyed integrity, missing-tip
-rollback detection and external anchoring are planned for v0.9.0
-(`docs/NEXT_PHASES.md`).
+partial edits, and fork anomalies. Rollback and downgrade are refused,
+never adopted silently: a tip pointer that disagrees with the data
+(ROLLBACK), a chained history whose tip is missing
+(ROLLBACK_SUSPECTED), and an unchained record after chained ones or an
+unkeyed record after keyed ones (DOWNGRADE) all stop diffing and
+appending. Only `openpulse observe --rebaseline --reason "..."` accepts
+such a history: a rollback is accepted at its current tip, anything
+else is moved to a `quarantine-*` folder and restarted, the reason is
+logged in `rebaselines.json` (MACed under the history key), and no
+change claims cross the re-baseline. A full wipe of the repository's
+folder, tip included, still looks like a first run to the store
+itself; an anchor kept outside it detects that (below). It does not resist an adversary who
+recomputes the whole suffix, unless a history key is set.
+
+With a history key (`OPENPULSE_HISTORY_KEY` or `--history-key-file`,
+made by `openpulse history-key generate`), every new observation
+record and detection-ledger entry also carries an HMAC-SHA256 under
+that key. The observation MAC covers the chain hash and
+`first_detected_at`; the ledger MAC covers the entry's content hash.
+Histories then verify VALID_KEYED (every MAC verifies), VALID_UNKEYED
+(hashes verify, but some record has no MAC), BROKEN or UNKNOWN (a MAC
+whose key was not supplied). An edit whose hashes were recomputed
+without the key is BROKEN under the key. A keyed history is never
+appended to without its key, and records written before the key stay
+unkeyed rather than being MACed after the fact. The key never lives in
+`.openpulse/`. Rotation keeps retired keys verify-only
+(`OPENPULSE_HISTORY_KEYS_PREVIOUS`, `--history-previous-keys-file`): the
+first observation written under a new key is a handover record, MACed
+by the retired key too, and a ledger rotation log (`rotations.json`,
+MACed by both keys) records when each key was retired. After a
+handover, a record under the retired key, a key change without a
+handover, or a ledger sighting under the retired key dated after its
+rotation is BROKEN, so a leaked retired key cannot extend history.
+
+History written before the key is adopted, never re-MACed as if it had
+always been keyed. In an observation chain, unkeyed records followed
+only by keyed ones verify VALID_KEYED: the first keyed record's chain
+hash pins them, and its `observed_at` is the adoption time. A ledger
+entry first written without a key gets `adopted_at`, under the MAC, the
+next time a keyed run writes it. Nothing before adoption is proved, so
+a lead time counts from the later of the first detection and the
+adoption: a lower bound, never an overstatement. Lead times in
+`digest`, `warnings`, `report` and `check` come only from VALID_KEYED
+ledger entries; without a history key they are not published, and the
+output says so.
+
+Deletions that take their own evidence with them (a repository's whole
+history folder, a ledger entry, the rotation log) cannot be seen from
+inside the store. `openpulse anchor` writes a checkpoint: each
+history's tip, record and re-baseline counts, one leaf per ledger entry
+(`first_seen`, `adopted_at`) with an RFC 6962 Merkle root, and the
+rotation log, MACed under the history key. Kept outside `.openpulse/`
+(a git commit, a CI artifact), it is checked with `openpulse verify
+--anchor`: an anchored tip no longer in its chain, a wiped history, a
+deleted or backdated ledger entry, or a dropped log entry is a
+violation; growth after the anchor is not. A re-baseline after the
+anchor is a notice only when its log entry verifies under the key.
+With a history key, regular anchors stored out of reach, and `verify`
+in the schedule, local history is tamper-evident: an edit fails its
+MAC, and a rollback or deletion fails the anchor. Without a key, it is
+corruption-detecting only.
 
 Every registry-derived finding retains first-class observation
 evidence (`observation_evidence`: observation ids, hashes, chain

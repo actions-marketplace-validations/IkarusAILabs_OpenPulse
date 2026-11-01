@@ -65,6 +65,63 @@ def _resolve_github_token(
         raise click.ClickException(str(exc)) from exc
 
 
+def _history_key_option(func):
+    """--history-key-file and --history-previous-keys-file (B3, B3b)."""
+    func = click.option(
+        "--history-previous-keys-file",
+        default=None,
+        type=click.Path(dir_okay=False),
+        help=(
+            "File of retired history keys, one per line, used only to verify "
+            "and hand over (else OPENPULSE_HISTORY_KEYS_PREVIOUS)"
+        ),
+    )(func)
+    return click.option(
+        "--history-key-file",
+        default=None,
+        type=click.Path(dir_okay=False),
+        help=(
+            "File holding the history key that MACs local history "
+            "(else OPENPULSE_HISTORY_KEY; see: openpulse history-key generate)"
+        ),
+    )(func)
+
+
+def _load_history_key(key_file: str | None, previous_file: str | None, *store_roots: str):
+    """(current key or None, retired keys). Never echoes key material."""
+    from core.history_key import (
+        HistoryKeyError,
+        key_file_warning,
+        load_history_key,
+        load_previous_keys,
+    )
+
+    roots = tuple(r for r in store_roots if r)
+    try:
+        key = load_history_key(key_file, roots)
+        previous = load_previous_keys(previous_file, roots, current=key)
+    except OSError as exc:
+        raise click.ClickException(f"cannot read history key file: {exc.strerror or exc}") from exc
+    except HistoryKeyError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if previous and key is None:
+        raise click.ClickException(
+            "previous history keys need a current key (OPENPULSE_HISTORY_KEY or "
+            "--history-key-file): retired keys only verify and hand over"
+        )
+    for path in (key_file, previous_file):
+        if path and (warning := key_file_warning(path)):
+            _echo(warning, err=True)
+    return key, previous
+
+
+def _history_keyring(key_file: str | None, previous_file: str | None, *store_roots: str):
+    """key_id -> HistoryKey (current and retired) for reading keyed history."""
+    from core.history_key import keyring
+
+    return keyring(*_load_history_key(key_file, previous_file, *(r for r in store_roots if r)))
+
+
 def _sarif_uri(path: str) -> str:
     """SARIF artifact uri for an input file: relative to the working
     directory (the repository root in CI) when possible, POSIX slashes."""
@@ -362,6 +419,125 @@ def dependency_track(
         raise SystemExit(1)
 
 
+@cli.group(name="history-key")
+def history_key_group():
+    """Manage the key that MACs local history (B3, docs/KEYED_INTEGRITY.md)."""
+
+
+@history_key_group.command(name="generate")
+def history_key_generate():
+    """Print a fresh 32-byte history key and its key_id. Writes no file.
+
+    Store the key outside .openpulse/ (a file with mode 600, or a CI
+    secret) and pass it as OPENPULSE_HISTORY_KEY or --history-key-file.
+    """
+    from core.history_key import generate_key
+
+    key, key_id = generate_key()
+    _echo(key)
+    _echo(f"key_id: {key_id}", err=True)
+
+
+@cli.command(name="anchor")
+@click.option("--store", default=".openpulse/observations", help="Observation history root")
+@click.option("--ledger", "ledger_root", default=".openpulse/detections", help="Ledger root")
+@click.option(
+    "--out",
+    default="",
+    type=click.Path(dir_okay=False),
+    help="Write the anchor JSON here (default: stdout). Keep it outside .openpulse/",
+)
+@_history_key_option
+def anchor_command(store, ledger_root, out, history_key_file=None, history_previous_keys_file=None):
+    """Checkpoint the local history, to keep where the store's writer cannot reach (B5).
+
+    Records every observation history's tip, the detection ledger's
+    entries and Merkle root, and the rotation log. With a history key the
+    anchor is MACed. Commit it to git or upload it as a CI artifact, then
+    check the store against it with `openpulse verify --anchor`.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    from core.anchor import build_anchor
+
+    history_key, _previous = _load_history_key(
+        history_key_file, history_previous_keys_file, store, ledger_root
+    )
+    if out and ".openpulse" in _Path(out).resolve().parts:
+        raise click.ClickException(
+            "an anchor inside .openpulse/ anchors nothing: write it elsewhere"
+        )
+    built = build_anchor(store, ledger_root, history_key=history_key)
+    text = _json.dumps(built, indent=2, sort_keys=True) + "\n"
+    if out:
+        _Path(out).write_text(text, encoding="utf-8")
+        _echo(f"wrote {out}", err=True)
+    else:
+        click.echo(text, nl=False)
+    _echo(
+        f"anchored {len(built['observations'])} histories, "
+        f"{len(built['ledger']['entries'])} ledger entries "
+        f"(merkle root {built['ledger']['merkle_root']}); "
+        f"{'MACed with ' + history_key.key_id if history_key else 'unsigned (no history key)'}",
+        err=True,
+    )
+
+
+@cli.command(name="verify")
+@click.option(
+    "--anchor", "anchor_path", required=True, type=click.Path(exists=True, dir_okay=False)
+)
+@click.option("--store", default=".openpulse/observations", help="Observation history root")
+@click.option("--ledger", "ledger_root", default=".openpulse/detections", help="Ledger root")
+@click.option(
+    "--require-signed",
+    is_flag=True,
+    help="Fail unless the anchor's MAC verifies under a supplied history key",
+)
+@click.option("--json", "as_json", is_flag=True, help="Print the result as JSON")
+@_history_key_option
+def verify_command(
+    anchor_path,
+    store,
+    ledger_root,
+    require_signed=False,
+    as_json=False,
+    history_key_file=None,
+    history_previous_keys_file=None,
+):
+    """Check the local history against an anchor; exit 1 when anything anchored is gone (B5)."""
+    import json as _json
+
+    from core.anchor import OK, verify_anchor
+    from core.bounded_io import loads_json, read_text
+    from core.history_key import keyring
+
+    try:
+        anchor = loads_json(read_text(anchor_path, MAX_BUNDLE_BYTES, anchor_path), anchor_path)
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise click.ClickException(f"{anchor_path} is not anchor JSON: {exc}") from exc
+    if not isinstance(anchor, dict):
+        raise click.ClickException(f"{anchor_path} is not anchor JSON")
+    keys = keyring(
+        *_load_history_key(history_key_file, history_previous_keys_file, store, ledger_root)
+    )
+    result = verify_anchor(anchor, store, ledger_root, keys)
+    failed = result["status"] != OK or (require_signed and result["signature"] != "VALID")
+    if as_json:
+        click.echo(_json.dumps(result, indent=2, sort_keys=True))
+    else:
+        _echo(f"anchor {anchor_path}: {result['status']} (signature {result['signature']})")
+        for v in result["violations"]:
+            _echo(f"! {v['kind']} {v['subject']}: {v['detail']}")
+        for n in result["notices"]:
+            _echo(f"- {n['kind']} {n['subject']}: {n['detail']}")
+        if require_signed and result["signature"] != "VALID":
+            _echo("! the anchor is not signed by a supplied history key (--require-signed)")
+    if failed:
+        raise SystemExit(1)
+
+
 @cli.command(name="demo-bitnami")
 def demo_bitnami():
     """Offline north-star demo: Bitnami event -> gate -> who is affected -> report."""
@@ -397,16 +573,54 @@ def demo_bitnami():
 @click.option("--namespace", required=True, help="Registry namespace (e.g. bitnami)")
 @click.option("--repo", "repository", required=True, help="Repository (e.g. redis)")
 @click.option("--store", default=".openpulse/observations", help="History root directory")
-def observe(namespace, repository, store):
+@click.option(
+    "--rebaseline",
+    is_flag=True,
+    help=(
+        "Accept a refused history (ROLLBACK, ROLLBACK_SUSPECTED, DOWNGRADE, BROKEN): "
+        "a rollback is accepted at its current tip, anything else is quarantined "
+        "and restarted. Needs --reason"
+    ),
+)
+@click.option("--reason", default="", help="Why the re-baseline is justified (logged)")
+@_history_key_option
+def observe(
+    namespace,
+    repository,
+    store,
+    rebaseline=False,
+    reason="",
+    history_key_file=None,
+    history_previous_keys_file=None,
+):
     """Probe a Docker Hub repo, persist the observation, diff against history."""
     from collectors.registries.docker import RegistryCollector
-    from core.observations.sweep import observe_repository
+    from core.observations.sweep import observe_repository, validate_rebaseline_reason
 
+    if reason and not rebaseline:
+        raise click.ClickException("--reason is only used with --rebaseline")
+    if rebaseline:
+        try:
+            reason = validate_rebaseline_reason(reason)
+        except ValueError as exc:
+            raise click.ClickException(f"--rebaseline needs --reason: {exc}") from exc
+    history_key, previous_keys = _load_history_key(
+        history_key_file, history_previous_keys_file, store
+    )
     probe = RegistryCollector().check_image(namespace, repository)
     if probe.get("error"):
         _echo(f"error: {probe.get('safe_message')} (category={probe.get('category')})")
         raise SystemExit(1)
-    result = observe_repository("docker.io", namespace, repository, probe, store_root=store)
+    result = observe_repository(
+        "docker.io",
+        namespace,
+        repository,
+        probe,
+        store_root=store,
+        history_key=history_key,
+        previous_keys=previous_keys,
+        rebaseline_reason=reason if rebaseline else None,
+    )
     if result["error"] is not None:
         _echo(
             f"error: {result['error'].get('safe_message')} "
@@ -414,6 +628,10 @@ def observe(namespace, repository, store):
         )
         raise SystemExit(1)
     _echo(f"saved: {result['saved_path']}")
+    _echo(f"history integrity: {result.get('history_integrity')}")
+    if result["history_status"] == "REBASELINED" and rebaseline:
+        _echo("re-baselined: reason logged in rebaselines.json; no change claims this run.")
+        return
     if result["history_status"] == "GENESIS":
         _echo("baseline recorded — no previous observation, no change claims.")
         return
@@ -458,6 +676,7 @@ def observe(namespace, repository, store):
     default="",
     help="Metadata JSON path (default: <out> with .meta.json extension)",
 )
+@_history_key_option
 def report(
     month,
     projects,
@@ -469,6 +688,8 @@ def report(
     store,
     ledger_root,
     metadata_out,
+    history_key_file=None,
+    history_previous_keys_file=None,
 ):
     """Monthly OSS Dependency Risk Report over seed projects."""
     import json as _json
@@ -500,6 +721,12 @@ def report(
         items.append(collect_project(slug, raw))
     import os
 
+    from core.history_key import keyring
+
+    history_key, previous_keys = _load_history_key(
+        history_key_file, history_previous_keys_file, store, ledger_root
+    )
+    history_keys = keyring(history_key, previous_keys)
     sweep_findings: list = []
     if with_sweep:
         from collectors.registries.docker import RegistryCollector
@@ -510,9 +737,13 @@ def report(
         wanted = set(slugs)
         selected = [e for e in catalog if e.get("slug") in wanted]
         _echo("running distribution sweep...")
-        sweep_findings = sweep_catalog(selected, RegistryCollector().check_image, store_root=store)[
-            "findings"
-        ]
+        sweep_findings = sweep_catalog(
+            selected,
+            RegistryCollector().check_image,
+            store_root=store,
+            history_key=history_key,
+            previous_keys=previous_keys,
+        )["findings"]
         _echo(f"sweep findings: {len(sweep_findings)}")
     notes = [
         "Collectors: endoflife.date, GitHub releases + repo metadata, NVD, CISA KEV, Docker Hub.",
@@ -524,6 +755,10 @@ def report(
         "Public intelligence describes project-level change; whether it affects "
         "YOUR dependencies needs a watchlist (`openpulse check`).",
     ]
+    if ledger_root and not history_keys:
+        from core.digest import UNKEYED_LEAD_TIME_NOTE
+
+        notes.append(UNKEYED_LEAD_TIME_NOTE)
     markdown = build_report(
         month,
         items,
@@ -532,6 +767,7 @@ def report(
         notes=notes,
         sweep_findings=sweep_findings,
         ledger_root=ledger_root or None,
+        history_keys=history_keys,
     )
     destination = out or f"reports/{month}-openpulse.md"
     _Path(destination).write_text(markdown + "\n", encoding="utf-8")
@@ -542,6 +778,7 @@ def report(
         since=since or None,
         include_related=include_related,
         ledger_root=ledger_root or None,
+        history_keys=history_keys,
     )
     metadata = build_report_metadata(
         month,
@@ -1081,6 +1318,7 @@ def _load_check_inputs(
     is_flag=True,
     help="Opt in to plain-http webhooks (https is required by default)",
 )
+@_history_key_option
 def check(
     watchlist,
     sbom,
@@ -1103,6 +1341,8 @@ def check(
     replay=False,
     max_evidence_age_days=None,
     as_of=None,
+    history_key_file=None,
+    history_previous_keys_file=None,
 ):
     """Dependency Early Warning: evaluate a watchlist against events."""
     from core.risk.check import check_dependency
@@ -1144,9 +1384,13 @@ def check(
     # run to today's no-ledger output, not crash the command a cron
     # schedule depends on.
     if ledger_root:
-        from core.detections.ledger import first_seen, record_detection
+        from core.detections.ledger import keyed_first_seen, record_detection
+        from core.history_key import keyring
         from core.risk.check import detections_from_verdicts
 
+        history_key, previous_keys = _load_history_key(
+            history_key_file, history_previous_keys_file, ledger_root
+        )
         try:
             for fact in detections_from_verdicts(results, loaded_events):
                 record_detection(
@@ -1155,6 +1399,8 @@ def check(
                     fact["subject"],
                     scope=fact["scope"],
                     root=ledger_root,
+                    history_key=history_key,
+                    previous_keys=previous_keys,
                 )
         except TimeoutError:
             _echo("ledger busy - detections not recorded this run", err=True)
@@ -1172,12 +1418,13 @@ def check(
                         seen
                         for fact in detections_from_verdicts([result], loaded_events)
                         if (
-                            seen := first_seen(
+                            seen := keyed_first_seen(
                                 fact["project"],
                                 fact["finding_class"],
                                 fact["subject"],
                                 scope=fact["scope"],
                                 root=ledger_root,
+                                keys=keyring(history_key, previous_keys),
                             )
                         )
                     ),
@@ -1329,6 +1576,7 @@ def check(
     show_default=True,
     help="Durable first-detection ledger root (read-only; `openpulse check` records)",
 )
+@_history_key_option
 def digest(
     watchlist,
     sbom,
@@ -1347,6 +1595,8 @@ def digest(
     replay=False,
     max_evidence_age_days=None,
     as_of=None,
+    history_key_file=None,
+    history_previous_keys_file=None,
 ):
     """M6 Early Warning: alert digest - upcoming deadlines for YOUR dependencies."""
     from core.digest import build_digest, render_digest_md
@@ -1383,7 +1633,13 @@ def digest(
         )
         for dep in deps
     ]
-    built = build_digest(results, loaded_events, ledger_root=ledger_root, window_days=window_days)
+    built = build_digest(
+        results,
+        loaded_events,
+        ledger_root=ledger_root,
+        window_days=window_days,
+        history_keys=_history_keyring(history_key_file, history_previous_keys_file, ledger_root),
+    )
     if output == "json":
         import json as _json
 
@@ -1473,6 +1729,7 @@ def digest(
     show_default=True,
     help="Durable first-detection ledger root (read-only; `openpulse check` records)",
 )
+@_history_key_option
 def warnings(
     watchlist,
     sbom,
@@ -1491,6 +1748,8 @@ def warnings(
     replay=False,
     max_evidence_age_days=None,
     as_of=None,
+    history_key_file=None,
+    history_previous_keys_file=None,
 ):
     """M6 Early Warning: warning deadlines for YOUR upcoming changes."""
     from core.risk.check import check_dependency
@@ -1527,7 +1786,13 @@ def warnings(
         )
         for dep in deps
     ]
-    built = build_warnings(results, loaded_events, ledger_root=ledger_root, window_days=window_days)
+    built = build_warnings(
+        results,
+        loaded_events,
+        ledger_root=ledger_root,
+        window_days=window_days,
+        history_keys=_history_keyring(history_key_file, history_previous_keys_file, ledger_root),
+    )
     if output == "json":
         import json as _json
 
@@ -1896,24 +2161,36 @@ def attest(
     "--projects", default="", help="Comma-separated slugs (default: every image in the catalog)"
 )
 @click.option("--out", default="", help="Write findings JSON here (default: print only)")
-def sweep(store, projects, out):
+@_history_key_option
+def sweep(store, projects, out, history_key_file=None, history_previous_keys_file=None):
     """Distribution discovery: probe every catalog image, diff against history."""
     from collectors.registries.docker import RegistryCollector
     from core.entities.catalog import load_catalog
     from core.observations.sweep import sweep_catalog, sweep_targets
 
+    history_key, previous_keys = _load_history_key(
+        history_key_file, history_previous_keys_file, store
+    )
     catalog = load_catalog()
     slugs = [s.strip() for s in projects.split(",") if s.strip()] or None
     targets = sweep_targets(catalog)
     _echo(f"probing {len(targets)} catalog images...")
     collector = RegistryCollector()
-    result = sweep_catalog(catalog, collector.check_image, store_root=store, slugs=slugs)
+    result = sweep_catalog(
+        catalog,
+        collector.check_image,
+        store_root=store,
+        slugs=slugs,
+        history_key=history_key,
+        previous_keys=previous_keys,
+    )
     _echo(
         f"observations: {len(result['observations'])}, "
         f"changes: {len(result['changes'])}, "
         f"findings: {len(result['findings'])}, "
         f"errors: {len(result['errors'])}"
     )
+    _echo(f"history key: {history_key.key_id if history_key else 'none (history is unkeyed)'}")
     for finding in result["findings"]:
         _echo(f"- [{finding['impact']}] {finding['title']}")
     for error in result["errors"]:
