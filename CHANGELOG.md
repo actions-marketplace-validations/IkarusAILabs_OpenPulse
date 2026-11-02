@@ -6,7 +6,163 @@ All notable changes to OpenPulse. Versions follow semver; while the project is `
 
 ### Added
 
-- **Known-malicious records in `dependency_status` (v0.13.0 item X1).** For any PyPI or npm package, catalogued or not, the new `malicious` field asks OSV whether it publishes a malicious-package record (`MAL-`, the OpenSSF malicious-packages feed) for that package and version.
+- **The organic reputation set, measured first (track T Phase 2, T-C; v0.16.0 item Q1).** The reputation indicators (publisher change, moved repository, young repository claiming popularity) are measured on real, legitimate packages before they ship.
+  - **Recorder:** `benchmarks/record_reputation.py` records 60 npm packages (a fixed-stride sample of the pinned high-impact list) and 80 PyPI packages (the curated catalog and OpenPulse's own locked dependencies), each with its latest 10 releases and its GitHub repository, into `benchmarks/fixtures/reputation/organic-<date>.json`.
+  - **What is stored:** who published each release (npm accounts only as hashes; the trusted-publishing provider; PyPI's provenance publisher), whether it carries attestations, and the repository's answered name, age, stars and flags. Every upstream string is validated first; no account name or e-mail is stored.
+  - **Baseline:** `benchmarks/trust.py` reports the raw signal rates on the set (see [`docs/research/TRACK_T_MEASUREMENTS.md`](docs/research/TRACK_T_MEASUREMENTS.md)): the upper bounds each indicator rule has to improve on.
+- **`publisher_change`: was this release published by someone the earlier ones were not? (threat T6; v0.16.0 item Q2).** `core/publisher_change.py` compares one release with the releases before it and names each rule that fires, as `SUSPICIOUS_INCONCLUSIVE` (an indicator, never a takeover verdict):
+  - **npm `new_account`:** the publishing account published none of the previous 9 releases, and the release was not published through trusted publishing (which uses one shared service account).
+  - **npm `trusted_publishing_dropped`:** an earlier release used trusted publishing, this one did not.
+  - **PyPI `publisher_changed`:** the provenance names another publisher than the latest earlier attested release's (within 3 releases); the record says which fields changed.
+  - **PyPI `attestations_stopped`:** no provenance, after a release that had it.
+  - **Measured on the organic set:** `new_account` flags 4.6% of legitimate npm releases (projects with several maintainers), `publisher_changed` 0.3% and `attestations_stopped` 0.4% of PyPI releases, `trusted_publishing_dropped` none. Same publisher as before is `VERIFIED_RELATIONSHIP` (continuity, not evidence of a benign release). npm accounts are compared as hashes, never named.
+  - Not yet in the `trust` block or a policy: that is item Q5.
+
+## 0.15.0 "Pre-Install Gates" — 2026-11-02
+
+Track T Phase 4 (T-E2): the v0.14 trust policy now also applies where dependencies enter, before anything is installed. The same policy that fails CI fails a commit and a pre-install CI step, with no model involved.
+- **`openpulse gate`:** applies the policy to dependency files alone, comparing with a git ref so only what changed is trust-checked.
+- **Pre-commit hook:** `openpulse-gate` checks the dependencies a commit adds or changes.
+- **The Action's `gate` input:** runs before `pip install` or `npm ci`, with the base branch's files and policy, on a shallow checkout.
+- **Bypass routes:** `--no-verify` is caught by the CI gate. A lockfile regenerated after the gate, an ungated file, and file names outside the hook's pattern are documented limits, each with a workaround.
+
+Nothing new blocks without a policy, and verdicts, the evidence contract and the frozen evaluation are unchanged. No upgrade notes.
+
+### Added
+
+- **`openpulse gate`: the trust policy before install (track T, T-E2, v0.15.0 item Z1).** `openpulse gate FILE... [--base-ref REF | --base FILE...] [--policy PATH]` applies the trust policy to dependency files alone, with no events needed. It is for a CI step before `pip install` or `npm ci` (`--base-ref origin/main`), and for a pre-commit hook (`--base-ref HEAD`). See [`docs/TRUST_POLICY.md`](docs/TRUST_POLICY.md), "Before install".
+  - **Comparison:** with `--base-ref`, each file's copy at that ref is read with `git show`, and trust checks run only for added or changed dependencies. A file new since the ref counts as added.
+  - **The same evaluation as `check` and `attest`:** the blocklist covers every dependency, lockfile hashes edited in place are caught, and `NOT_PERFORMED` never blocks.
+  - **Exit codes:** 0 pass, 1 violation, 2 usage error. Without a policy it passes and says so. Deleted and non-dependency files are skipped.
+- **Pre-commit hook `openpulse-gate` (v0.15.0 item Z2).** `.pre-commit-hooks.yaml` runs `openpulse gate --base-ref HEAD` on staged dependency files (`requirements*.txt`, `pyproject.toml`, `poetry.lock`, `package-lock.json`, `Cargo.toml`, `Cargo.lock`, `go.mod`, `pom.xml`), so a commit is checked only for the dependencies it adds or changes. See [`docs/TRUST_POLICY.md`](docs/TRUST_POLICY.md), "Pre-commit hook".
+  - **First commit:** `openpulse gate --base-ref HEAD` in a repository with no commits treats every file as new instead of failing. Any other unknown ref is still a usage error.
+- **The Action's `gate` input: the trust policy before install (v0.15.0 item Z3).** With `gate: <dependency files>`, the Action runs only `openpulse gate` (no events, contracts or SARIF), so it can sit before `pip install` or `npm ci`. See [`docs/GITHUB_ACTION.md`](docs/GITHUB_ACTION.md), "Before install".
+  - **Pull requests:** base copies come through the contents API (a shallow checkout is enough), and only added or changed dependencies are trust-checked. An unreadable base copy means that file is checked in full.
+  - **Settings:** the policy and the private-name list come from the base branch when it has them, so a pull request cannot weaken or delete its own gate.
+  - **Dogfood:** CI runs the gate input on every push, once passing and once blocked by the blocklist.
+  - **CLI without the Action:** `docs/TRUST_POLICY.md`, "In CI, before install".
+- **Pre-install bypass routes pinned by tests (v0.15.0 item Z4).** `tests/test_gate_bypass.py` now also covers the routes around the hook and the CI gate:
+  - **Covered:** `git commit --no-verify` is caught by the CI gate, which compares with the base branch.
+  - **Documented limits:** dependency files outside the hook's name pattern, a lockfile regenerated after the gate, and an install from a file the gate was not given.
+  - Each is listed with what to do instead in [`docs/TRUST_POLICY.md`](docs/TRUST_POLICY.md), "Bypass routes".
+
+### Changed
+
+- **`openpulse gate`: a missing or invalid policy file is a usage error (exit 2),** not a violation (exit 1).
+
+## 0.14.0 "Enforced Trust" — 2026-11-02
+
+Track T Phase 4 (T-E1): trust conditions you prohibit now fail CI deterministically, with no model involved, because advisory answers to an agent are not a security boundary.
+- **Trust policy:** `.openpulse/policy.yml` prohibits trust conditions, read by `check`, `attest` and the GitHub Action. It is backed by measured false-positive rates: lookalike names fire on 18.8% of real popular npm names, so indicators must name the packages they apply to.
+- **The Action on pull requests:** it checks trust for the dependencies a pull request adds or changes, and uses the base branch's policy so a pull request cannot weaken its own gate.
+- **Exports:** trust results appear in SARIF, the job summary and DefectDojo, with levels set by your policy, never by a risk score.
+- **Bypass tests:** they found and closed two pull-request bypasses, and document the routes the gate cannot cover.
+
+Nothing new blocks without a policy, and verdicts and the frozen evaluation are unchanged. **One upgrade note:** `dependency_status` drops the v0.12 top-level trust fields, which were deprecated in v0.13.0; read `trust.checks`.
+
+### Upgrade notes
+
+- **`dependency_status` no longer repeats `registry_existence`, `provenance` and `lookalike` at the top level (v0.14.0 item Y6).** They were deprecated in v0.13.0. Read them from `trust.checks`, where they have been since v0.13.0 with the same values. The `deprecated` field is gone too. Nothing else in the answer changes, and verdicts are unchanged.
+
+### Security
+
+- **A lockfile hash edited in place no longer passes the pull-request gate (v0.14.0 item Y5).** With `--base-lockfile` (the Action's `trust: pull-request`), the digest check ran only for entries with a new name or version. A pull request that kept an entry's name and version but changed its hash, swapping the artifact, was never checked. Digests are now checked for every entry whose locked digests differ from the base. Found by the new bypass tests.
+- **A pull request can no longer weaken its own trust gate in the Action (v0.14.0 item Y5).** With `trust: pull-request`, the action used the pull request's own `.openpulse/policy.yml` and `.openpulse/private-packages.txt`, so a pull request could delete its prohibitions or list a malicious name as private. The action now uses the base branch's copies when they exist. A policy the pull request adds is still used, because there was nothing to weaken. If the base copies can't be read, the action warns and uses the pull request's.
+
+### Added
+
+- **Gate bypass tests (track T evaluation category 8, v0.14.0 item Y5).** `tests/test_gate_bypass.py` pins each route around the trust gate. `docs/TRUST_POLICY.md`, "Bypass routes", lists each route as covered or not, with what to do instead.
+  - **Covered:** lockfile-only additions, hashes edited in place, respelled blocklisted names, an agent ignoring the MCP warning, and a pull request weakening its own policy.
+  - **Not covered:** removing the workflow step (use a required status check), unpinned entries, version-pinned blocklist entries, sources that don't answer, installs outside the gated files, and internal names missing from the private-name list.
+
+- **Trust records in SARIF, the job summary and DefectDojo (track T, T-E1, v0.14.0 item Y4).** This answers an open question from the Phase 0 trust design: how T-F1 statuses map onto these outputs without implying a risk score.
+  - **Where they appear:** `attest --sarif` and `--defectdojo` (and the GitHub Action) report trust records from contract 2.2.0 `trust_assurance`, plus trust policy violations, as their own results under `openpulse/trust/<check>`. Each appears once per file, dependency, check and status, with the https references it cites.
+  - **Levels follow your policy, not a score:**
+    - prohibited by your policy (including the blocklist): SARIF `error`, DefectDojo High;
+    - otherwise CONFIRMED_MALICIOUS or VERIFIED_FAILURE: `warning`, Low;
+    - otherwise SUSPICIOUS_INCONCLUSIVE: `note`, Info;
+    - other statuses are omitted unless prohibited.
+
+    No `security-severity` is emitted.
+  - **Job summary:** a separate *Trust checks* table.
+  - **Consistency:** SARIF and DefectDojo share one item list and one identity per record. Verdict results are unchanged (tested).
+
+- **The GitHub Action checks trust on pull requests (track T, T-E1, v0.14.0 item Y3).** New action inputs, both off by default so existing workflows stay offline and unchanged:
+  - **`trust`:** `off`, `pull-request` or `all`. With `pull-request`, the action reads the base branch's copy of `manifest` and `lockfile` through the GitHub contents API with `github-token`. The token is in the environment of that one step only. Trust checks then run only for the dependencies the pull request adds or changes.
+    - **New files:** a file the pull request adds counts entirely as added.
+    - **Unreadable base:** if a base copy can't be read, every dependency is checked; a failure never narrows the checks.
+  - **`policy`:** a trust policy file (default `.openpulse/policy.yml` when present). A violation fails the step even with `fail-on: none`.
+  - **CLI:** `openpulse attest --base-manifest PATH --base-lockfile PATH` does the same from the command line. Trust checks and the policy's trust conditions apply to added or changed dependencies, and the blocklist to all of them.
+  - **CI:** the action job now dogfoods a blocklist policy that must fail the step.
+
+- **Trust policy: prohibited conditions fail the run (track T, T-E1, v0.14.0 item Y2).** `.openpulse/policy.yml` (or `--policy PATH`) is read by `openpulse check` and `openpulse attest` and evaluated without any model. See [`docs/TRUST_POLICY.md`](docs/TRUST_POLICY.md).
+  - **`prohibit`:** for any package, `confirmed_malicious`, `not_found_in_registry`, `digest_mismatch`, `provenance_failure` and `repository_mismatch`. For named packages only, `missing_provenance`, `lookalike_name`, `public_private_name` and `unconfirmed_repository`. A policy that names an indicator without packages is refused, because the Y1 measurements show lookalike fires on 18.8% of real popular npm names. Conditions with no organic false-positive set warn that they are experimental.
+  - **`blocklist`:** `ECOSYSTEM:NAME[==VERSION]` patterns; no lookups needed.
+  - **What never blocks:** silence. `NOT_PERFORMED` and `MISSING_EVIDENCE` never fail a run unless a scoped condition says so.
+  - **When it fails:** a violation exits 1 after every output is written, alongside `--fail-on`. With no policy, gates are unchanged.
+
+- **Track T measurements (v0.14.0 item Y1).** `python benchmarks/trust.py` measures every trust check offline and writes `benchmarks/results/trust.json` and `docs/research/TRACK_T_MEASUREMENTS.md`. The owner accepted these measurements as the false-positive prerequisite for policy gates (T-E1, decision 11). They are not the registered study.
+  - **Synthetic cases:** 33 cases with 37 labelled expectations, from the roadmap's evaluation plan (existence, lookalike, dependency confusion, provenance and repository linkage, digest integrity, known-malicious records). They run against a stub world in the reserved `opfx-` namespace. Every case gets its expected status, with no false positives on the synthetic negatives; that shows the checks do what they claim, not how often real attacks are caught.
+  - **Degraded sources:** with every source unreachable, or the budget spent, no live check claims anything (0 of 284 records).
+  - **Untrusted text:** hostile names are refused before any request and never echoed. An instruction in an OSV summary never reaches a record.
+  - **Organic control (the informative number):** leave-one-out lookalike over 1000 real popular npm names. 18.8% look like another popular name; 9.7% without the `scope` rule, which fires on legitimate `@types/<name>`-style packages. So lookalike stays an indicator: a policy should prohibit it only for a named scope.
+  - **Labels per policy condition:** each condition a policy can prohibit is labelled *measured*, *measured; indicator* or *experimental* (no organic set yet: dependency confusion, unconfirmed repository linkage).
+  - Tests run a quick sample and check that the committed report matches the committed results.
+
+## 0.13.0 "Agent Trust Evidence" — 2026-11-02
+
+Track T Phase 3: trust evidence reaches agents in one place and goes into the evidence contract, with three new checks that each hold or fail against a cited source.
+- **Known-malicious packages:** OSV `MAL-` records for any PyPI or npm name are the first `CONFIRMED_MALICIOUS` answers, always with the record cited.
+- **Dependency confusion:** checked against your own private-name list.
+- **Starjacking:** repository linkage checks whether a package is really from the repository it claims.
+- **One `trust` block** in `dependency_status`, with the agent's stated reasons (`intent`, `name_source`) recorded but never used.
+- **Evidence contract 2.2.0:** `openpulse attest --trust` records the trust checks in `trust_assurance`.
+- **Opt-in local recording** of agent questions and answers (`openpulse mcp --record`), for research on how agents choose dependencies.
+
+Verdicts and the frozen evaluation are unchanged. **Two upgrade notes:**
+- `attest` now emits contract 2.2.0;
+- agents should read trust results from `dependency_status`'s `trust.checks`. The v0.12 top-level copies stay until v0.14.0.
+
+### Upgrade notes
+
+- **`openpulse attest` emits evidence contract 2.2.0 (v0.13.0 item X5).** It is 2.1 plus one required field, `trust_assurance`, which is null unless you pass `--trust`. Validate against `schemas/evidence-contract/v2.2/schema.json`; a 2.1 validator rejects the new field. The hash rule is unchanged. The 2.1 schema stays published byte-for-byte.
+- **`dependency_status` gathers its trust checks into one `trust` block (v0.13.0 item X4).** Read them from `trust.checks`. The v0.12.0 top-level fields `registry_existence`, `provenance` and `lookalike` are still there with the same values, listed under `deprecated`, and are removed in v0.14.0. The checks added in v0.13.0 (`malicious`, `dependency_confusion`, `repository_linkage`) are only in `trust.checks`. File checks keep their own `trust` block unchanged. Verdicts are unchanged.
+
+### Added
+
+- **Opt-in local recording of agent questions and answers (M8, v0.13.0 item X6).** `openpulse mcp --record DIR` appends one JSON line per tool call to `DIR/mcp-<session>.jsonl`. Each line holds the tool, its arguments, the outcome and a research summary: verdict, trust statuses, and the agent's `intent` and `name_source`. The full answer is included unless it is over 256 KB. It is off by default and local only: nothing is sent anywhere. Recording never changes an answer, a write failure stops recording without failing a tool, and on POSIX the files are owner-only. This is the data source for the track T research questions on how agents choose dependencies (RQ1, RQ4).
+- **Evidence contract 2.2.0 with `trust_assurance` (track T, T-F2, v0.13.0 item X5).** `openpulse attest --trust` checks each PyPI and npm dependency once per run and records it in every contract for that dependency:
+  - **The checks:** malicious records, registry existence, provenance, repository linkage, dependency confusion and lookalike.
+  - **Record shape:** each record is fixed: check, T-F1 status, a fixed statement, `checked_at` and the https URIs it cites. A summary counts every status, and `used_in_verdict` is always `false`. Free-form evidence stays out, so the public shape is stable.
+  - **Hash:** the JCS content hash covers the block, so `verify.mjs` checks it with no change.
+  - **Budget:** at most 4 lookups per dependency and 2000 per run. `--private-names` names the private-name list (default `.openpulse/private-packages.txt` when present).
+  - **Never part of a verdict:** assessments are identical with and without `--trust` (tested).
+  - **Schema:** `schemas/evidence-contract/v2.2/` is derived from 2.1, which stays untouched, and its bytes are now pinned by a test.
+
+- **One trust block, and the agent's reasons (track T, T-D, v0.13.0 item X4).** `dependency_status` answers carry `trust`:
+  - `checks`: every trust record (`malicious`, `registry_existence`, `provenance`, `repository_linkage`, `dependency_confusion`, `lookalike`);
+  - `summary`: counts per status;
+  - `attention`: each `CONFIRMED_MALICIOUS`, `VERIFIED_FAILURE` or `SUSPICIOUS_INCONCLUSIVE` record, with its check and statement;
+  - `time_frame`: the records are live lookups at their `checked_at`, and in replay mode it says they are not as of the replay date.
+  - **`selection_context`:** agents may say why they ask. `intent` is a short sentence, stripped of control, bidi and zero-width characters and capped at 280 characters. `name_source` is one of `user_request`, `existing_code`, `documentation`, `search_result`, `model_suggestion` or `other`; any other value is recorded as `unrecognized`, not echoed. Both are recorded as `supplied_by: agent`, `used_in_status: false`, and never change a status or verdict (tested). This is the input for the M8 research questions on how agents choose dependencies.
+
+- **Repository linkage in `dependency_status` `trust.checks` (track T, T-A4, v0.13.0 item X3).** Registry metadata can claim any repository: npm `repository`, PyPI `project_urls`. A package that claims a popular one borrows its stars ("starjacking", threat T4). The new `repository_linkage` record checks whether the claim holds in either direction:
+  - **Verified PyPI provenance settles it**, without reading GitHub. If it names the claimed repository as publisher, the result is `VERIFIED_RELATIONSHIP`. If it names a different one, the result is `VERIFIED_FAILURE`: the artifact was not built from the repository it claims.
+  - **Otherwise the claimed repository's manifest is read** at its default branch (`package.json`, following npm's `repository.directory`, or `pyproject.toml` then `setup.cfg`). If it names the package back, the result is `VERIFIED_RELATIONSHIP`. If it names a different package, the result is `SUSPICIOUS_INCONCLUSIVE`, an indicator only, since monorepos and renames do this too.
+  - **`MISSING_EVIDENCE`:** no GitHub repository is claimed, or the repository has no readable manifest. **`NOT_PERFORMED`:** registry or GitHub trouble, offline, a spent budget, or a package on the private-name list.
+  - **Bounds and parsing:** one budgeted lookup per package, cached per session. Manifests are parsed and never executed (`setup.py` is never read), and capped at 1 MB. Repository names, directories and the manifest's name are validated before they appear. GitHub repositories only.
+  - **Trust block:** file checks run it for every non-private package in `trust`. Never part of a verdict (tested).
+
+- **Dependency confusion against your private-name list (track T, T-A3, v0.13.0 item X2).** List your internal package names in `.openpulse/private-packages.txt`, one `ecosystem:name` per line (`PyPI:acme-billing`, `npm:@acme/ui-kit`). OpenPulse asks the public registry about those names, and only those.
+  - **`SUSPICIOUS_INCONCLUSIVE`:** a public package has the name. If you did not publish it, an installer that also consults the public registry may resolve it instead of yours.
+  - **`MISSING_EVIDENCE`:** no public package has the name. It is unclaimed, which also means anyone can still register it.
+  - **`NOT_PERFORMED`:** the registry gave no usable answer, offline, budget spent, or the package is not on the list (or there is no list).
+  - **MCP:** `dependency_status` gains a `dependency_confusion` record in `trust.checks`, and the server reads the list from its project root on every call. A listed package skips the public-registry `registry_existence` and `provenance` checks, which describe someone else's package, so a private dependency no longer reads as a hallucinated name. `malicious` and `lookalike` still run.
+  - **Trust block:** `check_dependency_file` runs it for listed packages in `trust`.
+  - **CLI:** `openpulse confusion [LIST]` checks every listed name, and `openpulse trust --private-names LIST` uses a list (the default file when present). Both are report-only.
+  - **Validation:** names are validated against the registry grammars, PyPI spellings are normalized (PEP 503), and a bad line is skipped by line number without echoing its text. The list is capped at 500 names and 256 KB. Never part of a verdict (tested).
+
+- **Known-malicious records in `dependency_status` `trust.checks` (v0.13.0 item X1).** For any PyPI or npm package, catalogued or not, the new `malicious` record asks OSV whether it publishes a malicious-package record (`MAL-`, the OpenSSF malicious-packages feed) for that package and version.
   - **`CONFIRMED_MALICIOUS`** cites each record by id and osv.dev URL (10 at most, with a total). This is the first check that can return this status, and only from a cited record, never from OpenPulse's own indicators. A record listed only under an alias counts; a withdrawn record does not.
   - **`MISSING_EVIDENCE`:** no such record. The feed covers reported packages only, so this is not evidence of safety. There is no "verified" outcome.
   - **`NOT_PERFORMED`:** OSV gave no usable answer, paged its answer without a record on the first page, offline, or a spent budget.

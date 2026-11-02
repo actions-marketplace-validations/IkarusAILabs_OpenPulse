@@ -46,10 +46,38 @@ inputs:
     default: action
   github-token:
     description: >-
-      Token for github-repo discovery only (passed as env GITHUB_TOKEN, never
-      argv; never read for path inputs).
+      Token for github-repo discovery and, with trust pull-request, for reading
+      the base copies of the path inputs (passed as env, never argv; needs
+      contents read).
     required: false
     default: ${{ github.token }}
+  trust:
+    description: >-
+      Trust checks (malicious records, registry existence, provenance,
+      repository linkage, lookalike names; live lookups). off (default),
+      pull-request (on pull requests, only dependencies added or changed
+      against the base branch's copy of manifest and lockfile), or all.
+    required: false
+    default: 'off'
+  policy:
+    description: >-
+      Trust policy file (docs/TRUST_POLICY.md). Empty: .openpulse/policy.yml
+      when it exists. A prohibited condition fails the step.
+    required: false
+    default: ''
+  gate:
+    description: >-
+      Pre-install gate (docs/TRUST_POLICY.md): whitespace/newline-separated
+      dependency files. When set, the step runs only `openpulse gate` on them,
+      with the trust policy, so place it before `pip install` or `npm ci`. On a
+      pull request only dependencies added or changed against the base branch
+      are trust-checked, and the base branch's policy is used. No SARIF.
+    required: false
+    default: ''
+  base-sha:
+    description: Base commit for trust pull-request and gate (default the pull request's base)
+    required: false
+    default: ${{ github.event.pull_request.base.sha }}
   sarif-file:
     description: Where to write the SARIF 2.1.0 log
     required: false
@@ -78,8 +106,8 @@ outputs:
     description: Repository inspection coverage (COMPLETE, PARTIAL, FAILED, or NOT_APPLICABLE when no repository was inspected)
     value: ${{ steps.run.outputs.inspection-coverage }}
   threshold-breached:
-    description: "'true' when the fail-on threshold was breached"
-    value: ${{ steps.run.outputs.threshold-breached }}
+    description: "'true' when the fail-on threshold or a trust policy was breached"
+    value: ${{ steps.run.outputs.threshold-breached || steps.gate.outputs.threshold-breached }}
 
 runs:
   using: composite
@@ -111,9 +139,27 @@ runs:
           --no-deps -e "$ACTION_ROOT"
         echo "OPENPULSE_BIN=$bin" >> "$GITHUB_ENV"
 
+    # Pre-install gate (v0.15.0 Z3): only `openpulse gate`, before anything
+    # is installed. Threat: a pull request weakening its own gate - the base
+    # copies, the policy and the private-name list come from the base branch.
+    - id: gate
+      if: inputs.gate != ''
+      name: Run openpulse gate
+      shell: bash
+      env:
+        ACTION_ROOT: ${{ github.action_path }}
+        IN_GATE: ${{ inputs.gate }}
+        IN_POLICY: ${{ inputs.policy }}
+        IN_BASE_SHA: ${{ inputs.base-sha }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+        "$OPENPULSE_BIN/python" "$ACTION_ROOT/scripts/action_gate.py"
+
     # Threat: script injection - every input reaches the shell as an env var
     # and a quoted argv element, never interpolated into the script text.
     - id: run
+      if: inputs.gate == ''
       name: Run openpulse attest
       shell: bash
       env:
@@ -128,6 +174,10 @@ runs:
         IN_FAIL_ON: ${{ inputs.fail-on }}
         IN_SARIF: ${{ inputs.sarif-file }}
         IN_CONTRACTS: ${{ inputs.contracts-file }}
+        IN_TRUST: ${{ inputs.trust }}
+        IN_POLICY: ${{ inputs.policy }}
+        IN_BASE_SHA: ${{ inputs.base-sha }}
+        IN_TOKEN: ${{ inputs.github-token }}
         # Threat: token in the process list - env only; the CLI resolves it
         # solely for --github-repo.
         GITHUB_TOKEN: ${{ inputs.github-token }}
@@ -158,6 +208,70 @@ runs:
           done
         fi
 
+        # Trust checks; on a pull request only for what it adds or changes.
+        trust=()
+        base_policy=""
+        base_private=""
+        settings_unavailable=false
+        case "$IN_TRUST" in
+          off|'') ;;
+          all) trust=(--trust) ;;
+          pull-request)
+            if [ -z "$IN_BASE_SHA" ]; then
+              echo "::notice title=OpenPulse trust::trust pull-request: no base commit on a $GITHUB_EVENT_NAME event, trust checks skipped"
+            else
+              trust=(--trust)
+              roles=()
+              files=()
+              [ -n "$IN_MANIFEST" ] && { roles+=(manifest); files+=("$IN_MANIFEST"); }
+              [ -n "$IN_LOCKFILE" ] && { roles+=(lockfile); files+=("$IN_LOCKFILE"); }
+              # Threat: a pull request weakening its own gate - the policy and
+              # the private-name list come from the base branch when it has them.
+              roles+=(policy private)
+              files+=("${IN_POLICY:-.openpulse/policy.yml}" ".openpulse/private-packages.txt")
+              basedir="$RUNNER_TEMP/openpulse-base"
+              rm -rf -- "$basedir"
+              fetched="$(GITHUB_TOKEN="$IN_TOKEN" "$OPENPULSE_BIN/python" \
+                "$ACTION_ROOT/scripts/action_base_files.py" \
+                "$GITHUB_REPOSITORY" "$IN_BASE_SHA" "$basedir" "${files[@]}")"
+              base=()
+              unavailable=false
+              i=0
+              while IFS=$'\t' read -r status path file; do
+                [ -n "$status" ] || continue
+                role="${roles[$i]}"
+                i=$((i + 1))
+                case "$role:$status" in
+                  manifest:found) base+=(--base-manifest "$file") ;;
+                  lockfile:found) base+=(--base-lockfile "$file") ;;
+                  policy:found) base_policy="$file" ;;
+                  private:found) base_private="$file" ;;
+                  manifest:unavailable|lockfile:unavailable) unavailable=true ;;
+                  policy:unavailable|private:unavailable) settings_unavailable=true ;;
+                esac
+              done <<< "$fetched"
+              if [ "$unavailable" = true ]; then
+                # A failure never narrows the checks: check every dependency.
+                echo "::warning title=OpenPulse trust::could not read a base file; checking every dependency"
+              elif [ "${#base[@]}" -gt 0 ]; then
+                trust+=("${base[@]}")
+              fi
+              if [ "$settings_unavailable" = true ]; then
+                echo "::warning title=OpenPulse trust::could not read the base branch's policy or private-name list; using this pull request's copy"
+              fi
+              [ -n "$base_private" ] && trust+=(--private-names "$base_private")
+            fi ;;
+          *) echo "::error title=OpenPulse::unknown trust '$IN_TRUST' (off, pull-request, all)"; exit 2 ;;
+        esac
+        unset IN_TOKEN
+        policy=()
+        if [ -n "$base_policy" ]; then
+          echo "OpenPulse: using the base branch's trust policy"
+          policy=(--policy "$base_policy")
+        elif [ -n "$IN_POLICY" ]; then
+          policy=(--policy "$IN_POLICY")
+        fi
+
         gate=()
         case "$IN_FAIL_ON" in
           none|'') ;;
@@ -171,6 +285,7 @@ runs:
         set +e
         # ${a[@]+...}: empty arrays under `set -u` on bash 3.2 (macOS).
         "$OPENPULSE_BIN/openpulse" attest "${args[@]}" "${events[@]}" ${gate[@]+"${gate[@]}"} \
+          ${trust[@]+"${trust[@]}"} ${policy[@]+"${policy[@]}"} \
           --output "$IN_CONTRACTS" --sarif "$IN_SARIF" --summary "$summary"
         rc=$?
         set -e
@@ -185,8 +300,8 @@ runs:
         if [ "$coverage" != "COMPLETE" ] && [ "$coverage" != "NOT_APPLICABLE" ]; then
           echo "::warning title=OpenPulse coverage::repository inspection coverage $coverage - results are not a clean bill of health"
         fi
-        # Outputs exist, so a non-zero exit is the fail-on gate (input and
-        # schema errors exit before anything is written).
+        # Outputs exist, so a non-zero exit is a gate: fail-on or the trust
+        # policy (input and schema errors exit before anything is written).
         breached=false
         [ "$rc" -ne 0 ] && breached=true
         {
@@ -197,7 +312,7 @@ runs:
         } >> "$GITHUB_OUTPUT"
 
     # Threat: an unpinned upload action - pinned by SHA like ci.yml.
-    - if: inputs.upload-sarif == 'true'
+    - if: inputs.upload-sarif == 'true' && inputs.gate == ''
       uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
       with:
         sarif_file: ${{ steps.run.outputs.sarif-file }}
@@ -213,6 +328,13 @@ runs:
         if [ "$IN_COVERAGE" = "FAILED" ]; then
           echo "::error title=OpenPulse::repository inspection coverage FAILED - a gate never passes on a repository it could not read"
         else
-          echo "::error title=OpenPulse::fail-on $IN_FAIL_ON threshold breached (see the job summary)"
+          echo "::error title=OpenPulse::gate failed: fail-on $IN_FAIL_ON threshold or a trust policy violation (see the job summary and log)"
         fi
+        exit 1
+
+    - name: Enforce the gate
+      if: steps.gate.outputs.threshold-breached == 'true'
+      shell: bash
+      run: |
+        echo "::error title=OpenPulse gate::the trust policy prohibits a dependency (see the log above); nothing should be installed"
         exit 1

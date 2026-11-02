@@ -228,6 +228,7 @@ class Lookups:
         fetch_provenance: Callable[[str], tuple[int, Any]] | None = None,
         verify: Callable[[Any, str, str], list[dict[str, Any]]] | None = None,
         osv_query: Callable[[dict[str, Any]], tuple[int, Any]] | None = None,
+        fetch_text: Callable[[str], tuple[int, str | None]] | None = None,
     ):
         self._fetch = fetch
         self._ttl = ttl
@@ -243,6 +244,8 @@ class Lookups:
         self._fetch_provenance = fetch_provenance
         self._verify = verify
         self._osv_query = osv_query
+        self._fetch_text = fetch_text
+        self._linkage: dict[tuple[str, ...], tuple[float, dict[str, Any]]] = {}
         self._malicious: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
         self._provenance: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
         self._digests: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
@@ -365,6 +368,37 @@ class Lookups:
         record = malicious.check(ecosystem, name, version, query=self._osv_query)
         if record["status"] != "NOT_PERFORMED":
             self._malicious[key] = (now, record)
+        return record
+
+    def linkage(
+        self,
+        ecosystem: str,
+        name: str,
+        version: str | None,
+        publishers: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        """Repository linkage record (T-A4), cached per session; NOT_PERFORMED never cached."""
+        from core import repository_linkage
+
+        named = sorted(str(p.get("repository")) for p in publishers or [] if p.get("repository"))
+        key = (ecosystem, name, version or "", *named)
+        hit = self._linkage.get(key)
+        now = time.monotonic()
+        if hit is not None and now - hit[0] < self._ttl:
+            return hit[1]
+        if self.used >= self.budget:
+            raise BudgetExhausted(_BUDGET_REASON.format(budget=self.budget))
+        self.used += 1
+        record = repository_linkage.check(
+            ecosystem,
+            name,
+            version,
+            publishers=publishers,
+            fetch_json=self._fetch_json,
+            fetch_text=self._fetch_text,
+        )
+        if record["status"] != "NOT_PERFORMED":
+            self._linkage[key] = (now, record)
         return record
 
     def _disk_path(self, slug: str) -> Path | None:
@@ -667,6 +701,92 @@ def _malicious(dep: dict[str, Any], lookups: Lookups | None) -> dict[str, Any]:
         return malicious.not_performed("budget")
 
 
+def _is_private(dep: dict[str, Any], names: frozenset[tuple[str, str]] | None) -> bool:
+    from core import dependency_confusion
+
+    return bool(
+        names
+        and dep["kind"] == "package"
+        and dependency_confusion.listed(names, dep.get("ecosystem"), str(dep["package"]))
+    )
+
+
+def _registry_existence_private(dep: dict[str, Any]) -> list[dict[str, Any]]:
+    from core import registry_existence
+
+    eco = registry_existence.ecosystem_of(dep.get("ecosystem"))
+    return registry_existence.not_performed("private", ecosystem=eco)
+
+
+def _repository_linkage_private() -> dict[str, Any]:
+    from core import repository_linkage
+
+    return repository_linkage.not_performed("private")
+
+
+def _provenance_private() -> dict[str, Any]:
+    from core import provenance
+
+    return provenance.not_performed("private")
+
+
+def _dependency_confusion(
+    dep: dict[str, Any], lookups: Lookups | None, names: frozenset[tuple[str, str]] | None
+) -> dict[str, Any]:
+    """T-A3: does a public package carry this private name? Never a verdict input."""
+    from core import dependency_confusion, registry_existence
+
+    ecosystem = registry_existence.ecosystem_of(dep.get("ecosystem"))
+    if dep["kind"] != "package" or ecosystem is None:
+        return dependency_confusion.not_performed("unsupported")
+    if names is None:
+        return dependency_confusion.not_performed("no_list")
+    if not _is_private(dep, names):
+        return dependency_confusion.not_performed("not_listed")
+    if lookups is None:
+        return dependency_confusion.not_performed("offline")
+    try:
+        existence = lookups.existence(ecosystem, str(dep["package"]), None)
+    except BudgetExhausted:
+        return dependency_confusion.not_performed("budget")
+    return dependency_confusion.from_existence(ecosystem, existence)
+
+
+def dependency_confusion_record(
+    ecosystem: str,
+    name: str,
+    lookups: Lookups | None,
+    names: frozenset[tuple[str, str]],
+) -> dict[str, Any]:
+    """T-A3 for one listed name, outside any file or version."""
+    dep = {"kind": "package", "package": name, "ecosystem": ecosystem}
+    return _dependency_confusion(dep, lookups, names)
+
+
+def _repository_linkage(
+    dep: dict[str, Any], lookups: Lookups | None, provenance: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """T-A4: is the package from the repository it claims? Never a verdict input.
+
+    Verified publishers from the T-B1 record, when there are any, settle the
+    question without reading the repository.
+    """
+    from core import registry_existence, repository_linkage
+
+    ecosystem = registry_existence.ecosystem_of(dep.get("ecosystem"))
+    if dep["kind"] != "package" or ecosystem is None:
+        return repository_linkage.not_performed("unsupported")
+    if lookups is None:
+        return repository_linkage.not_performed("offline")
+    publishers = None
+    if provenance and provenance.get("status") in ("VERIFIED_RELATIONSHIP", "VERIFIED_FAILURE"):
+        publishers = provenance.get("evidence", {}).get("publishers") or None
+    try:
+        return lookups.linkage(ecosystem, str(dep["package"]), dep.get("version"), publishers)
+    except BudgetExhausted:
+        return repository_linkage.not_performed("budget")
+
+
 def _lookalike(dep: dict[str, Any]) -> dict[str, Any]:
     """T-A2: does the name resemble a reference name? Local data only; never a verdict input."""
     from core import lookalike
@@ -698,6 +818,8 @@ def _assess(
     today: date | None,
     evaluation: Evaluation,
     existence: bool = False,
+    private_names: frozenset[tuple[str, str]] | None = None,
+    selection_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from core.risk.check import check_dependency
     from core.verdict_meaning import DIRECT_SCOPE, scope_completeness, verdict_meaning
@@ -804,14 +926,102 @@ def _assess(
         "note": evaluation.note,
     }
     if existence:
-        # Track T (T-M1): additive, separately labelled, never read by the verdict.
-        answer["registry_existence"] = _registry_existence(dep, lookups)
-        answer["provenance"] = _provenance(dep, lookups)
-        answer["lookalike"] = _lookalike(dep)
-        answer["malicious"] = _malicious(dep, lookups)
+        # Track T: one trust block, additive, never read by the verdict (T-D).
+        checks = trust_checks(dep, lookups, private_names)
+        # The v0.12 top-level registry_existence, provenance and lookalike were
+        # removed in v0.14.0 (deprecated in v0.13.0): trust.checks holds them.
+        answer["trust"] = _trust_block(checks, evaluation, selection_context)
         if lookups is not None:
             answer["lookups"] = lookups.status()
     return answer
+
+
+def trust_checks(
+    dep: dict[str, Any],
+    lookups: Lookups | None,
+    private_names: frozenset[tuple[str, str]] | None = None,
+) -> dict[str, Any]:
+    """Every track T record for one dependency entry, keyed by check name.
+
+    ``dep`` is a reader entry (``kind`` package or image). ``lookups`` None
+    means offline: every live check is NOT_PERFORMED. Never a verdict input.
+    """
+    checks: dict[str, Any] = {"malicious": _malicious(dep, lookups)}
+    if _is_private(dep, private_names):
+        # The public registry is not where a private package comes from (T-A3).
+        checks["registry_existence"] = _registry_existence_private(dep)
+        checks["provenance"] = _provenance_private()
+        checks["repository_linkage"] = _repository_linkage_private()
+    else:
+        checks["registry_existence"] = _registry_existence(dep, lookups)
+        checks["provenance"] = _provenance(dep, lookups)
+        checks["repository_linkage"] = _repository_linkage(dep, lookups, checks["provenance"])
+    checks["dependency_confusion"] = _dependency_confusion(dep, lookups, private_names)
+    checks["lookalike"] = _lookalike(dep)
+    return checks
+
+#: Where an agent says a package name came from (T-D); a closed vocabulary.
+NAME_SOURCES = (
+    "user_request",
+    "existing_code",
+    "documentation",
+    "search_result",
+    "model_suggestion",
+    "other",
+)
+MAX_INTENT_CHARS = 280
+
+
+def selection_context(intent: str | None, name_source: str | None) -> dict[str, Any] | None:
+    """An agent's stated reason for choosing a package, labelled and bounded (T-D).
+
+    Recorded for the agent and for M8 research, never used in any status or
+    verdict. ``name_source`` outside :data:`NAME_SOURCES` becomes
+    ``unrecognized`` and is not echoed; ``intent`` is stripped of control,
+    bidi and zero-width characters and capped (T-F3).
+    """
+    from collectors.errors import strip_unsafe
+
+    text = " ".join(strip_unsafe(intent or "").split())
+    source = (name_source or "").strip().lower()
+    if not text and not source:
+        return None
+    return {
+        "supplied_by": "agent",
+        "used_in_status": False,
+        "name_source": (source if source in NAME_SOURCES else "unrecognized") if source else None,
+        "intent": text[:MAX_INTENT_CHARS] or None,
+        "intent_truncated": len(text) > MAX_INTENT_CHARS,
+    }
+
+
+def _trust_block(
+    checks: dict[str, Any], evaluation: Evaluation, context: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Every track T record for one dependency, counted, with what needs attention."""
+    summary = dict.fromkeys(_TRUST_STATUSES, 0)
+    attention = []
+    for check, found in checks.items():
+        for record in found if isinstance(found, list) else [found]:
+            summary[record["status"]] += 1
+            if record["status"] in _ATTENTION:
+                attention.append(
+                    {"check": check, "status": record["status"], "statement": record["statement"]}
+                )
+    replay = evaluation.context.get("mode") != CURRENT
+    return {
+        "checks": checks,
+        "summary": summary,
+        "attention": attention,
+        "selection_context": context,
+        "time_frame": (
+            "live lookups at each record's checked_at, not as of the replay date"
+            if replay
+            else "live lookups at each record's checked_at"
+        ),
+        "note": "trust checks are indicators and checks, never part of any verdict; no status "
+        "means safe, and MISSING_EVIDENCE is not evidence of authenticity",
+    }
 
 
 def dependency_status(
@@ -826,6 +1036,9 @@ def dependency_status(
     mode: str = CURRENT,
     as_of: datetime | None = None,
     max_evidence_age_days: int | None = None,
+    private_names: frozenset[tuple[str, str]] | None = None,
+    intent: str | None = None,
+    name_source: str | None = None,
 ) -> dict[str, Any]:
     """Evidence for one dependency: EOL/EOS, curated upstream changes
     (distribution, license, support) and OSV advisories for its version,
@@ -835,6 +1048,13 @@ def dependency_status(
     ``mode="current"`` (default) bounds evidence age for negatives
     (``max_evidence_age_days``, default 90, as of ``as_of``);
     ``mode="replay"`` disables the bound and the response says so.
+
+    ``private_names`` is the user's private-name list
+    (:func:`core.dependency_confusion.load`): a listed package gets a
+    ``dependency_confusion`` record instead of public-registry checks.
+
+    ``intent`` and ``name_source`` are the agent's own account of why it
+    asks (:func:`selection_context`): recorded in ``trust``, never used.
     """
     evaluation = Evaluation(
         mode, as_of=as_of, max_evidence_age_days=max_evidence_age_days, today=today
@@ -843,7 +1063,14 @@ def dependency_status(
     if live and lookups is None:
         lookups = Lookups()
     return _assess(
-        dep, lookups if live else None, curated_events(), today, evaluation, existence=True
+        dep,
+        lookups if live else None,
+        curated_events(),
+        today,
+        evaluation,
+        existence=True,
+        private_names=private_names,
+        selection_context=selection_context(intent, name_source),
     )
 
 
@@ -858,6 +1085,7 @@ def check_dependency_file(
     max_evidence_age_days: int | None = None,
     base_path: str | None = None,
     trust_all: bool = False,
+    private_names: frozenset[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Every pinned dependency of one manifest, lockfile, SBOM or image list.
 
@@ -869,7 +1097,8 @@ def check_dependency_file(
     ``base_path`` is an earlier version of the file: the dependencies added
     or changed since then get the track T trust checks (``trust``, U5).
     ``trust_all`` runs them on every dependency instead. Neither: no trust
-    checks, ``trust`` is None.
+    checks, ``trust`` is None. ``private_names`` as in
+    :func:`dependency_status`.
     """
     evaluation = Evaluation(
         mode, as_of=as_of, max_evidence_age_days=max_evidence_age_days, today=today
@@ -898,9 +1127,13 @@ def check_dependency_file(
         base_deps, _, _ = _read_dependency_file(base_path)
         base_keys = {_dependency_key(d) for d in base_deps}
         added = [d for d in deps if _dependency_key(d) not in base_keys]
-        trust = _trust_checks(added, lookups if live else None, scope="added since base")
+        trust = _trust_checks(
+            added, lookups if live else None, scope="added since base", private=private_names
+        )
     elif trust_all:
-        trust = _trust_checks(deps, lookups if live else None, scope="all dependencies")
+        trust = _trust_checks(
+            deps, lookups if live else None, scope="all dependencies", private=private_names
+        )
     truncated = len(deps) > MAX_FILE_DEPENDENCIES
     deps = deps[:MAX_FILE_DEPENDENCIES]
     events = curated_events()
@@ -970,23 +1203,38 @@ def _dependency_key(dep: dict[str, Any]) -> tuple[str, ...]:
 
 
 def _trust_checks(
-    deps: list[dict[str, Any]], lookups: Lookups | None, *, scope: str
+    deps: list[dict[str, Any]],
+    lookups: Lookups | None,
+    *,
+    scope: str,
+    private: frozenset[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Track T trust checks (U5) on the given dependencies; never a verdict input.
 
     PyPI and npm packages get malicious-package records (X1), registry
     existence (T-M1), provenance (T-B1, PyPI) and lookalike indicators (T-A2).
+    Repository linkage (T-A4) reuses the provenance record. A package on
+    the private-name list gets dependency confusion (T-A3) instead of
+    existence, provenance and linkage, which describe the public package.
     The live checks run for at most MAX_LIVE_PROJECTS packages (the W4
     per-file bound) within the session budget; the rest are counted as
     capped. Lookalike is local data, so every package gets it. Counts per
-    check and status, with every record that needs attention (CONFIRMED_MALICIOUS, VERIFIED_FAILURE,
-    SUSPICIOUS_INCONCLUSIVE) listed in full.
+    check and status, with every record that needs attention
+    (CONFIRMED_MALICIOUS, VERIFIED_FAILURE, SUSPICIOUS_INCONCLUSIVE) listed
+    in full.
     """
     from core import registry_existence
 
     counts = {
         check: dict.fromkeys(_TRUST_STATUSES, 0)
-        for check in ("malicious", "registry_existence", "provenance", "lookalike")
+        for check in (
+            "malicious",
+            "dependency_confusion",
+            "registry_existence",
+            "provenance",
+            "repository_linkage",
+            "lookalike",
+        )
     }
     attention: list[dict[str, Any]] = []
     checked = capped = unsupported = 0
@@ -1001,8 +1249,13 @@ def _trust_checks(
         if lookups is None or checked < MAX_LIVE_PROJECTS:
             checked += lookups is not None
             records["malicious"] = [_malicious(dep, lookups)]
-            records["registry_existence"] = _registry_existence(dep, lookups)
-            records["provenance"] = [_provenance(dep, lookups)]
+            if _is_private(dep, private):
+                records["dependency_confusion"] = [_dependency_confusion(dep, lookups, private)]
+            else:
+                records["registry_existence"] = _registry_existence(dep, lookups)
+                provenance = _provenance(dep, lookups)
+                records["provenance"] = [provenance]
+                records["repository_linkage"] = [_repository_linkage(dep, lookups, provenance)]
         else:
             capped += 1
         subject = {

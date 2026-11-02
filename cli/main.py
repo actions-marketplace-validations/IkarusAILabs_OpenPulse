@@ -342,7 +342,15 @@ def analyze(project, raw_bundle, project_version):
     is_flag=True,
     help="No network: answer from the bundled curated events only",
 )
-def mcp_command(root, offline):
+@click.option(
+    "--record",
+    "record",
+    default=None,
+    type=click.Path(file_okay=False),
+    help="Opt-in: append each question and answer as JSON lines to a file in this "
+    "local directory (research on how agents use dependency evidence); never sent anywhere",
+)
+def mcp_command(root, offline, record):
     """MCP server (stdio) for AI coding agents: dependency evidence as tools.
 
     Needs the optional `mcp` extra (see docs/MCP.md).
@@ -357,7 +365,378 @@ def mcp_command(root, offline):
         ) from None
     from cli.mcp_server import run
 
-    run(root=root, live=not offline)
+    if record:
+        _echo(f"openpulse mcp: recording questions and answers under {record}", err=True)
+    run(root=root, live=not offline, record=record)
+
+
+#: Live lookups per dependency for `attest --trust` (malicious, existence,
+#: provenance, linkage), and the most one run may make.
+_ATTEST_TRUST_LOOKUPS_PER_DEP = 4
+_ATTEST_TRUST_MAX_LOOKUPS = 2000
+
+
+def _attest_trust(deps, private_names, base_keys=None):
+    """{dependency index: 2.2 trust_assurance block}; each dependency checked once.
+
+    With ``base_keys`` (the dependencies of the base files), only dependencies
+    added or changed since the base are checked; the others get no block.
+    """
+    from core import agent_tools
+    from core.evidence_contract import trust_assurance_block
+
+    names = _private_name_list(private_names)
+    eligible = [
+        (i, dep, agent_tools._dependency_key(dep))
+        for i, dep in enumerate(deps)
+        if agent_tools._refused_entry(dep) is None
+    ]
+    if base_keys is not None:
+        before = len({key for _, _, key in eligible})
+        eligible = [e for e in eligible if e[2] not in base_keys]
+        _echo(
+            f"trust: {len({key for _, _, key in eligible})} of {before} dependencies are "
+            "added or changed since the base",
+            err=True,
+        )
+    unique = {key for _, _, key in eligible}
+    lookups = agent_tools.Lookups(
+        cache_dir=agent_tools.default_cache_dir(),
+        budget=min(
+            _ATTEST_TRUST_MAX_LOOKUPS, _ATTEST_TRUST_LOOKUPS_PER_DEP * len(unique) + 10
+        ),
+    )
+    blocks: dict[Any, Any] = {}
+    out: dict[int, Any] = {}
+    for index, dep, key in eligible:
+        if key not in blocks:
+            blocks[key] = trust_assurance_block(agent_tools.trust_checks(dep, lookups, names))
+        out[index] = blocks[key]
+    _echo(
+        f"trust: {len(blocks)} dependencies checked, {lookups.used} of {lookups.budget} "
+        "lookups used",
+        err=True,
+    )
+    return out
+
+
+def _policy_option(func):
+    """--policy: trust conditions that fail the run (T-E1)."""
+    return click.option(
+        "--policy",
+        "policy_path",
+        type=click.Path(dir_okay=False),
+        default=None,
+        help="Trust policy: prohibited conditions fail the run, with no model involved "
+        "(default: .openpulse/policy.yml if present; see docs/TRUST_POLICY.md)",
+    )(func)
+
+
+def _load_policy(path):
+    """An explicit policy must exist; the default one is used only when present."""
+    from core import trust_policy as _policy
+
+    if path is None:
+        if not _policy.DEFAULT_POLICY.is_file():
+            return None
+        path = str(_policy.DEFAULT_POLICY)
+    elif not os.path.isfile(path):
+        raise click.ClickException(f"{path}: policy file not found")
+    try:
+        loaded = _policy.load(path)
+    except (ValueError, UnicodeDecodeError) as e:
+        raise click.ClickException(str(e)) from e
+    _echo(f"policy: {path}", err=True)
+    for condition in loaded.experimental:
+        _echo(
+            f"policy: {condition} is experimental (no organic false-positive measurement; "
+            "docs/research/TRACK_T_MEASUREMENTS.md)",
+            err=True,
+        )
+    return loaded
+
+
+def _policy_violations(
+    deps,
+    loaded,
+    lockfile=None,
+    blocks=None,
+    base_keys=None,
+    base_lockfile=None,
+    private_names=None,
+):
+    """Every policy violation across the run's dependencies, deterministically.
+
+    With ``base_keys``, trust conditions apply to added or changed
+    dependencies only; the blocklist always applies to every dependency.
+    With ``base_lockfile``, digests are checked for every lockfile entry
+    whose locked digests differ from the base, including an existing entry
+    whose hash was edited in place (same name and version).
+    """
+    from core import agent_tools
+    from core import trust_policy as _policy
+
+    if loaded is None:
+        return []
+    if loaded.needs_trust and blocks is None:
+        blocks = _attest_trust(deps, private_names, base_keys)
+    digests: dict[Any, Any] = {}
+    if loaded.needs_digests and lockfile:
+        from core.lockfile_reader import lockfile_digests
+
+        locked = lockfile_digests(lockfile)
+        if base_lockfile:
+            before = lockfile_digests(base_lockfile)
+            locked = {
+                key: value
+                for key, value in locked.items()
+                if _digest_set(before.get(key)) != _digest_set(value)
+            }
+        elif base_keys is not None:
+            locked = {
+                key: value
+                for key, value in locked.items()
+                if agent_tools._dependency_key(
+                    {"kind": "package", "ecosystem": key[0], "package": key[1], "version": key[2]}
+                )
+                not in base_keys
+            }
+        lookups = agent_tools.Lookups(
+            cache_dir=agent_tools.default_cache_dir(),
+            budget=min(_ATTEST_TRUST_MAX_LOOKUPS, len(locked) + 10),
+        )
+        for key, values in locked.items():
+            try:
+                digests[key] = lookups.digest_integrity(*key, values)
+            except agent_tools.BudgetExhausted:
+                break
+    violations = []
+    for index, dep in enumerate(deps):
+        records = list((blocks or {}).get(index, {}).get("checks", []))
+        key = (str(dep.get("ecosystem")), str(dep.get("package")), str(dep.get("version")))
+        if key in digests:
+            records.append({"check": "digest_integrity", **digests[key]})
+        violations += [dict(v, index=index) for v in _policy.evaluate(loaded, dep, records)]
+    return violations
+
+
+def _digest_set(locked):
+    """Locked digests as a comparable value, independent of order."""
+    return {name: sorted(values) for name, values in (locked or {}).items()}
+
+
+def _base_keys(base_files):
+    """Dependency keys of the base copies of the run's files, or None without any."""
+    from core import agent_tools
+
+    paths = [p for p in base_files if p]
+    if not paths:
+        return None
+    keys = set()
+    for path in paths:
+        try:
+            deps, _, _ = agent_tools._read_dependency_file(path)
+        except (ValueError, OSError, UnicodeDecodeError) as e:
+            raise click.ClickException(f"{path}: cannot read the base file: {e}") from e
+        keys |= {agent_tools._dependency_key(d) for d in deps}
+    return keys
+
+
+def _report_violations(violations) -> bool:
+    """Print each violation; True when the run must fail."""
+    for v in violations:
+        detail = f" - {v['statement']}" if v.get("statement") else ""
+        _echo(f"policy: PROHIBITED {v['condition']}: {v['dependency']}{detail}", err=True)
+    if violations:
+        _echo(f"policy: {len(violations)} violation(s): gate failed", err=True)
+    return bool(violations)
+
+
+def _private_name_list(path):
+    """An explicit list must exist; the default one is used only when present."""
+    from core import dependency_confusion
+
+    if path is None:
+        default = dependency_confusion.DEFAULT_LIST
+        return dependency_confusion.load(default)[0] if default.is_file() else None
+    if not os.path.isfile(path):
+        raise click.ClickException(f"{path}: private-name list not found")
+    names, skipped = dependency_confusion.load(path)
+    for message in skipped:
+        _echo(f"warning: {path}: {message}", err=True)
+    return names
+
+
+@cli.command(name="confusion")
+@click.argument("names_file", required=False, type=click.Path(dir_okay=False))
+@click.option("--offline", is_flag=True, help="No network: list what would be checked")
+@click.option("--json", "as_json", is_flag=True, help="Print the records as JSON")
+def confusion_command(names_file, offline, as_json):
+    """Dependency confusion: which of your private names exist publicly (track T, T-A3).
+
+    Reads NAMES_FILE (default .openpulse/private-packages.txt), one
+    `ecosystem:name` per line (PyPI or npm), and asks the public registry
+    about each. Report-only: never part of a verdict, never a failing exit.
+    """
+    import json as _json
+
+    from core import agent_tools, dependency_confusion
+
+    path = names_file or str(dependency_confusion.DEFAULT_LIST)
+    if not os.path.isfile(path):
+        raise click.ClickException(f"{path}: private-name list not found")
+    try:
+        names, skipped = dependency_confusion.load(path)
+    except (ValueError, UnicodeDecodeError) as e:
+        raise click.ClickException(f"{path}: {e}") from e
+    lookups = None if offline else agent_tools.Lookups(cache_dir=agent_tools.default_cache_dir())
+    results = [
+        {
+            "ecosystem": eco,
+            "name": name,
+            **agent_tools.dependency_confusion_record(eco, name, lookups, names),
+        }
+        for eco, name in sorted(names)
+    ]
+    if as_json:
+        click.echo(_json.dumps({"list": path, "skipped": skipped, "results": results}, indent=2))
+        return
+    for message in skipped:
+        _echo(f"warning: {path}: {message}", err=True)
+    click.echo(f"{path}: {len(results)} private names")
+    for r in results:
+        click.echo(f"  {r['status']:<24} {r['ecosystem']}:{r['name']}")
+    public = [r for r in results if r["status"] == "SUSPICIOUS_INCONCLUSIVE"]
+    if public:
+        click.echo(
+            "note: a public package carries each name marked SUSPICIOUS_INCONCLUSIVE; "
+            "if you did not publish it, pin your private index for that name"
+        )
+
+
+def _git_base_copy(path: str, ref: str, out_dir: str) -> str | None:
+    """The file at ``ref`` written under ``out_dir`` (same name), or None if new there.
+
+    Raises click.UsageError when git or the ref is unusable: a gate never
+    guesses its base.
+    """
+    import subprocess
+    from pathlib import Path as _Path
+
+    def git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *args], capture_output=True, check=False)
+
+    try:
+        top = git("-C", str(_Path(path).resolve().parent), "rev-parse", "--show-toplevel")
+    except OSError as e:
+        raise click.UsageError(f"--base-ref needs git: {e}") from e
+    if top.returncode != 0:
+        raise click.UsageError(f"{path}: not inside a git repository (--base-ref)")
+    root = _Path(top.stdout.decode("utf-8").strip())
+    if git("-C", str(root), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").returncode:
+        if ref == "HEAD" and not git("-C", str(root), "rev-list", "-n1", "--all").stdout.strip():
+            return None  # the first commit (pre-commit hook): every file in it is new
+        raise click.UsageError(f"--base-ref {ref}: not a commit in {root}")
+    relative = _Path(path).resolve().relative_to(root.resolve()).as_posix()
+    shown = git("-C", str(root), "show", f"{ref}:{relative}")
+    if shown.returncode != 0:
+        return None  # the file does not exist at ref: everything in it is added
+    target = _Path(out_dir) / _Path(relative).name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(shown.stdout)
+    return str(target)
+
+
+@cli.command(name="gate")
+@click.argument("paths", nargs=-1, required=True, type=click.Path(dir_okay=False))
+@click.option(
+    "--base-ref",
+    default=None,
+    help="Git ref to compare with (e.g. HEAD in a pre-commit hook, origin/main in CI): "
+    "trust checks run only for dependencies added or changed since it",
+)
+@click.option(
+    "--base",
+    "base_paths",
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Base copy of each PATH, in the same order (instead of --base-ref)",
+)
+@click.option(
+    "--private-names",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help="Private-name list (default: .openpulse/private-packages.txt if present)",
+)
+@_policy_option
+def gate_command(paths, base_ref, base_paths, private_names, policy_path):
+    """Pre-install trust gate (track T, T-E2): the trust policy on dependency files.
+
+    Run it before `pip install` or `npm ci`, or as a pre-commit hook. Exit 0
+    when nothing the policy prohibits is found, 1 on a violation, 2 on a
+    usage error. Without a policy there is nothing to enforce, so it passes.
+    No events are needed: this checks trust, not upstream changes.
+    """
+    import tempfile
+    from pathlib import Path as _Path
+
+    from core import agent_tools
+
+    if base_ref and base_paths:
+        raise click.UsageError("use --base-ref or --base, not both")
+    if base_paths and len(base_paths) != len(paths):
+        raise click.UsageError("give one --base per PATH, in the same order")
+    try:
+        loaded = _load_policy(policy_path)
+    except click.UsageError:
+        raise
+    except click.ClickException as e:  # a missing or invalid policy is not a violation
+        raise click.UsageError(e.message) from e
+    if loaded is None:
+        _echo("gate: no trust policy (.openpulse/policy.yml): nothing is prohibited, passed")
+        return
+    names = _private_name_list(private_names)
+    violations: list[dict[str, Any]] = []
+    checked = added = 0
+    with tempfile.TemporaryDirectory(prefix="openpulse-gate-") as scratch:
+        for index, path in enumerate(paths):
+            if not _Path(path).is_file():
+                _echo(f"gate: {path}: not present (deleted?), skipped", err=True)
+                continue
+            try:
+                deps, _skipped, kind = agent_tools._read_dependency_file(path)
+            except ValueError:
+                _echo(f"gate: {path}: not a dependency file, skipped", err=True)
+                continue
+            if base_paths:
+                base = base_paths[index]
+            elif base_ref:
+                base = _git_base_copy(path, base_ref, str(_Path(scratch) / str(index)))
+            else:
+                base = None
+            if base_ref or base_paths:
+                base_keys = _base_keys([base]) if base else set()
+            else:
+                base_keys = None
+            lockfile = path if kind in ("npm", "poetry") else None
+            base_lockfile = base if lockfile and base else None
+            checked += len(deps)
+            added += len(deps) if base_keys is None else sum(
+                agent_tools._dependency_key(d) not in base_keys for d in deps
+            )
+            violations += _policy_violations(
+                deps,
+                loaded,
+                lockfile,
+                None,
+                base_keys,
+                base_lockfile,
+                private_names=names,
+            )
+    if _report_violations(violations):
+        raise SystemExit(1)
+    scope = "added or changed" if (base_ref or base_paths) else "checked"
+    _echo(f"gate: passed ({checked} dependencies, {added} {scope}, no violation)")
 
 
 @cli.command(name="trust")
@@ -369,9 +748,16 @@ def mcp_command(root, offline):
     help="Earlier copy of the file (e.g. `git show main:poetry.lock > base.lock`): "
     "only dependencies added or changed since then are checked",
 )
+@click.option(
+    "--private-names",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help="Private-name list (default: .openpulse/private-packages.txt if present): listed "
+    "packages are checked for a public package with the same name",
+)
 @click.option("--offline", is_flag=True, help="No network: lookalike indicators only")
 @click.option("--json", "as_json", is_flag=True, help="Print the full trust block as JSON")
-def trust_command(path, base, offline, as_json):
+def trust_command(path, base, private_names, offline, as_json):
     """Trust checks for PyPI and npm dependencies (report-only, track T).
 
     Registry existence, provenance (PyPI) and lookalike-name indicators for
@@ -384,8 +770,14 @@ def trust_command(path, base, offline, as_json):
 
     lookups = None if offline else agent_tools.Lookups(cache_dir=agent_tools.default_cache_dir())
     try:
+        names = _private_name_list(private_names)
         out = agent_tools.check_dependency_file(
-            path, lookups=lookups, live=not offline, base_path=base, trust_all=base is None
+            path,
+            lookups=lookups,
+            live=not offline,
+            base_path=base,
+            trust_all=base is None,
+            private_names=names,
         )
     except ValueError as e:
         raise click.ClickException(str(e)) from e
@@ -1504,6 +1896,7 @@ def _load_check_inputs(
     help="Sign webhook posts with the secret on the first line of PATH "
     "(or set OPENPULSE_WEBHOOK_SECRET); receivers verify X-OpenPulse-Signature",
 )
+@_policy_option
 @_history_key_option
 def check(
     watchlist,
@@ -1531,6 +1924,7 @@ def check(
     as_of=None,
     history_key_file=None,
     history_previous_keys_file=None,
+    policy_path=None,
 ):
     """Dependency Early Warning: evaluate a watchlist against events."""
     from core.risk.check import check_dependency
@@ -1569,6 +1963,7 @@ def check(
         )
         for dep in deps
     ]
+    violations = _policy_violations(deps, _load_policy(policy_path), lockfile)
     # Durable detection ledger: an empty --ledger value disables it
     # (per-run behavior, exactly like today); anything else is the root.
     # Acquisition is best-effort BY DESIGN: the ledger is an
@@ -1658,6 +2053,8 @@ def check(
         from core.risk.check import fail_on_threshold
 
         threshold = fail_on or ("action" if strict else "")
+        if _report_violations(violations):
+            raise SystemExit(1)
         if threshold and fail_on_threshold(results, threshold):
             raise SystemExit(1)
         if coverage_blocked:
@@ -1696,6 +2093,8 @@ def check(
 
     # Same gate as the digest branch: --fail-on must not depend on
     # the presentation (it was silently ignored here before).
+    if _report_violations(violations):
+        raise SystemExit(1)
     if fail_on and fail_on_threshold(results, fail_on):
         raise SystemExit(1)
     if strict and strict_affected(results):
@@ -2139,6 +2538,35 @@ def _warnings_gate(built, fail_on, inspections) -> None:
     help="Exit 1 after writing every output when the same threshold `check --fail-on` "
     "uses is breached, or when repository inspection coverage is FAILED",
 )
+@click.option(
+    "--trust",
+    "trust",
+    is_flag=True,
+    help="Also check trust for PyPI and npm dependencies (live lookups) and record it in "
+    "each contract's trust_assurance (2.2.0); never part of a verdict",
+)
+@click.option(
+    "--private-names",
+    "private_names",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help="With --trust: private-name list (default: .openpulse/private-packages.txt if "
+    "present)",
+)
+@click.option(
+    "--base-manifest",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="The base copy of --manifest (e.g. the pull request's base branch): trust checks "
+    "run only for dependencies added or changed since it",
+)
+@click.option(
+    "--base-lockfile",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="The base copy of --lockfile, as --base-manifest",
+)
+@_policy_option
 def attest(
     watchlist,
     sbom,
@@ -2159,8 +2587,13 @@ def attest(
     replay=False,
     max_evidence_age_days=None,
     as_of=None,
+    trust=False,
+    private_names=None,
+    policy_path=None,
+    base_manifest=None,
+    base_lockfile=None,
 ):
-    """Emit one evidence-contract v1 document per dependency × event pair.
+    """Emit one evidence-contract document per dependency × event pair.
 
     JSONL: one schema-valid contract per line, so stdout stays
     pipeable; progress chatter goes to stderr. Each document is
@@ -2320,11 +2753,18 @@ def attest(
             _echo(f"   - {reason}", err=True)
         coverage_override = {"status": run_status, "reasons": run_reasons}
     evaluation = _evaluation(replay, max_evidence_age_days, as_of)
+    loaded_policy = _load_policy(policy_path)
+    base_keys = _base_keys([base_manifest, base_lockfile])
+    trust_blocks = _attest_trust(deps, private_names, base_keys) if trust else {}
+    violations = _policy_violations(
+        deps, loaded_policy, lockfile, trust_blocks if trust else None, base_keys, base_lockfile
+    )
     # One contract per dependency x event: the attested pair is the
     # unit of consumption, not the combined verdict over all events.
     lines: list[str] = []
     rendered: list[tuple[dict[str, Any], str]] = []
-    for dep, uri in zip(deps, uris, strict=True):
+    labels: dict[int, str] = {}
+    for index, (dep, uri) in enumerate(zip(deps, uris, strict=True)):
         for event in loaded_events:
             verdict = check_dependency(
                 dep,
@@ -2339,6 +2779,7 @@ def attest(
                 inspection_coverage=coverage_override,
                 as_of=evaluation.as_of,
                 max_evidence_age=evaluation.max_evidence_age,
+                trust_assurance=trust_blocks.get(index),
             )
             problems = validate_contract(doc)
             if problems:
@@ -2349,6 +2790,13 @@ def attest(
                 )
             lines.append(_json.dumps(doc, sort_keys=True))
             rendered.append((doc, uri))
+            labels[index] = str(doc["affected_dependency"]["label"])
+    # Violations, located like the contracts they concern (SARIF, DefectDojo).
+    located = [
+        dict(v, uri=uris[v["index"]], label=labels[v["index"]])
+        for v in violations
+        if v["index"] in labels
+    ]
     if sarif_path or summary_path:
         from core.sarif import build_sarif, render_summary
 
@@ -2356,6 +2804,7 @@ def attest(
             rendered,
             tool_version=openpulse_version(),
             coverage=coverage_override,
+            trust_violations=located,
         )
         if sarif_path:
             _Path(sarif_path).write_text(
@@ -2371,7 +2820,7 @@ def attest(
     if defectdojo_path:
         from core.defectdojo import build_findings
 
-        dojo = build_findings(rendered)
+        dojo = build_findings(rendered, located)
         _Path(defectdojo_path).write_text(
             _json.dumps(dojo, indent=2, sort_keys=True) + NL, encoding="utf-8"
         )
@@ -2382,6 +2831,8 @@ def attest(
     else:
         for line in lines:
             click.echo(line)
+    if _report_violations(violations):
+        raise SystemExit(1)
     if fail_on:
         from core.risk.check import fail_on_threshold
 

@@ -56,7 +56,7 @@ permissions:
 steps:
   - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     with: {persist-credentials: false}
-  - uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.12.0
+  - uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.15.0
     with:
       manifest: requirements.txt
       fail-on: action   # fail only on ACTION/CRITICAL findings
@@ -69,7 +69,7 @@ Inputs, permissions, SARIF levels and full workflows: [docs/GITHUB_ACTION.md](do
 AI agents add and upgrade dependencies faster than anyone reviews them. `openpulse mcp` is an [MCP](https://modelcontextprotocol.io) server that lets Claude Code, Cursor, Copilot and other MCP clients ask OpenPulse **before** they change a dependency.
 
 ```bash
-pip install "ikarus-openpulse[mcp] @ git+https://github.com/IkarusAILabs/OpenPulse@v0.12.0"
+pip install "ikarus-openpulse[mcp] @ git+https://github.com/IkarusAILabs/OpenPulse@v0.15.0"
 claude mcp add openpulse -- openpulse mcp      # Claude Code
 ```
 
@@ -268,6 +268,37 @@ everything else. We do not compete on EOL record counts.
 - **Security-team tools**: `attest --defectdojo` writes DefectDojo Generic Findings, and `openpulse dependency-track` pushes affected findings into Dependency-Track as INTERNAL vulnerabilities. Both are built from the same evidence contracts as SARIF.
 - **CLI**: validate events, run analysts live or offline, observe registries, sweep the catalog, render per-project Pulse, generate monthly reports, check watchlists, CycloneDX or SPDX SBOMs, npm/poetry/Cargo lockfiles, requirements/pyproject/pom/go.mod/Cargo manifests (namespaced Maven POMs included), and GitHub repositories (`--github-repo`, commit- and blob-SHA-pinned, with COMPLETE/PARTIAL/FAILED inspection coverage; manifests, lockfiles, SBOMs and image lists found in the repo are all read) with digest + webhook delivery, show upcoming deadlines (`openpulse digest`, `openpulse warnings`), emit evidence-contract 2.1 documents (`openpulse attest`), and replay the Bitnami case end to end. Webhook delivery enforces an SSRF policy (https by default; `--webhook-allow-http` opts in) and never prints the webhook URL path; pass the URL as `OPENPULSE_WEBHOOK_URL` and tokens as `GITHUB_TOKEN` to keep them out of the process list.
 - **740+ offline tests** (count reported by CI), `ruff` clean, CI green (Linux + Windows, incl. CodeQL + pip-audit, lock-drift check, deterministic SBOM, secret tripwire).
+
+## What's new in v0.15
+
+v0.15.0 "Pre-Install Gates" applies the v0.14 trust policy where dependencies enter, before anything is installed. Nothing new blocks unless your policy says so. Full notes: [`CHANGELOG.md`](CHANGELOG.md).
+
+- **`openpulse gate`.** `openpulse gate requirements.txt poetry.lock --base-ref origin/main` applies the policy to dependency files alone. Only what changed since the ref is trust-checked; the blocklist covers everything. Exit 0 pass, 1 violation, 2 usage error ([`docs/TRUST_POLICY.md`](docs/TRUST_POLICY.md)).
+- **Pre-commit hook.** Add `openpulse-gate` from this repository to `.pre-commit-config.yaml`, and a commit is checked for the dependencies it adds or changes.
+- **Before install in CI.** The Action's `gate` input runs before `pip install` or `npm ci`, reading the base branch's files and policy, so a pull request cannot weaken its own gate ([`docs/GITHUB_ACTION.md`](docs/GITHUB_ACTION.md)).
+- **Bypass routes.** `git commit --no-verify` is caught by the CI gate; the routes no gate can cover are tested and documented with what to do instead.
+
+## What's new in v0.14
+
+v0.14.0 "Enforced Trust" turns trust evidence into CI gates that do not depend on an agent: an agent can skip or ignore an advisory answer, but not a failing check. Nothing new blocks unless your policy says so. Full notes: [`CHANGELOG.md`](CHANGELOG.md).
+
+- **Trust policy.** `.openpulse/policy.yml` lists the conditions that fail `check`, `attest` and the GitHub Action: a confirmed-malicious record, a name missing from the registry, a digest or provenance failure, a repository mismatch, and a blocklist. Indicators such as lookalike names must name the packages they apply to ([`docs/TRUST_POLICY.md`](docs/TRUST_POLICY.md)).
+- **Measured first.** `benchmarks/trust.py` measures every check offline. Lookalike names fire on 18.8% of real popular npm names, which is why they are an indicator, not a block ([`docs/research/TRACK_T_MEASUREMENTS.md`](docs/research/TRACK_T_MEASUREMENTS.md)).
+- **Pull requests.** With `trust: pull-request`, the Action checks only what a pull request adds or changes, and reads the policy from the base branch so a pull request cannot weaken its own gate.
+- **SARIF and DefectDojo.** Trust results are listed separately from verdicts; `error` and High mean your policy prohibits it, never a risk score.
+- **Bypass routes.** Each way around the gate is tested and documented, with what to do for the ones it cannot cover.
+- **Upgrade note.** `dependency_status` no longer repeats `registry_existence`, `provenance` and `lookalike` at the top level: read `trust.checks`.
+
+## What's new in v0.13
+
+v0.13.0 "Agent Trust Evidence" is track T Phase 3: trust evidence reaches agents in one place and goes into the evidence contract. Every check is evidence to review, never part of a verdict. Full notes: [`CHANGELOG.md`](CHANGELOG.md).
+
+- **Known-malicious packages.** OSV's malicious-package records (`MAL-`) are checked for any PyPI or npm name. A hit is `CONFIRMED_MALICIOUS`, always with the record cited.
+- **Dependency confusion.** List your internal names in `.openpulse/private-packages.txt`; OpenPulse reports which of them a public package also uses (`openpulse confusion`).
+- **Starjacking.** Repository linkage checks whether a package is really from the GitHub repository its registry metadata claims, using verified provenance or the repository's own manifest.
+- **One `trust` block for agents.** `dependency_status` gathers every check, counts it and lists what needs attention. Agents can say why they ask (`intent`, `name_source`); that is recorded and never used. **Upgrade note:** read `trust.checks`; the v0.12 top-level fields go in v0.14.0.
+- **Evidence contract 2.2.0.** `openpulse attest --trust` records the checks in each contract's `trust_assurance`, covered by the existing content hash. **Upgrade note:** validate against `schemas/evidence-contract/v2.2/`.
+- **Research recording.** `openpulse mcp --record DIR` keeps a local, opt-in log of what agents ask and are told.
 
 ## What's new in v0.12
 
@@ -490,7 +521,7 @@ tests/              # 740+ offline tests (no network in CI)
 | `docs/BITNAMI_VALIDATION.md` | The Phase-3 acceptance gate |
 | `docs/MCP.md` | OpenPulse for AI coding agents: setup per client, tools, example answer, security model |
 | `docs/GITHUB_ACTION.md` | The GitHub Action: inputs, permissions, SARIF levels, workflows |
-| `docs/EVIDENCE_CONTRACT.md` | Evidence contract 2.1 (and 1.0 / 1.1 / 1.2 / 2.0) — machine-readable dependency verdicts |
+| `docs/EVIDENCE_CONTRACT.md` | Evidence contract 2.2 (and 1.0 / 1.1 / 1.2 / 2.0 / 2.1) — machine-readable dependency verdicts |
 | `docs/NEXT_PHASES.md` | Implementation plan v0.7 → v0.10: release and distribution, hardening, Anchored Trust, M6 operations, supply chain |
 | `CHANGELOG.md` | What changed in each release |
 | `SECURITY.md` | How to report a vulnerability, supported versions, known limitations |
