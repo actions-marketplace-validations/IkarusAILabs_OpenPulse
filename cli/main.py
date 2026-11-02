@@ -1,12 +1,14 @@
 """openpulse CLI — validate + pulse + analyze + demo-bitnami."""
 
 import json
+import os
 import sys
 from typing import Any
 
 import click
 
 from analyzers import change_analyst, report_analyst, security_analyst
+from collectors.errors import strip_unsafe
 from core.entities.resolve import resolve_project
 from core.schema.models import OSSEvent
 from core.version import openpulse_version
@@ -38,6 +40,30 @@ MAX_EVIDENCES = 100
 MAX_ARTIFACTS = 500
 
 
+#: Whether the platform has POSIX permission bits worth checking (#139).
+_POSIX_MODES = os.name != "nt"
+
+
+def _warn_if_token_file_shared(path: str | None, stat=os.stat) -> None:
+    """Warn when other accounts can read or write the token file (#139).
+
+    ssh refuses a private key in that state; OpenPulse warns instead, so
+    existing setups keep working. Only the path is printed, never the token.
+    """
+    if not path or not _POSIX_MODES:
+        return
+    try:
+        mode = stat(path).st_mode
+    except OSError:
+        return  # the read that follows reports it
+    if mode & 0o077:
+        _echo(
+            f"warning: GitHub token file {path} is readable by other users; "
+            f"run chmod 600 {path}",
+            err=True,
+        )
+
+
 def _resolve_github_token(
     github_repo: str, github_token: str, github_token_file: str | None
 ) -> str | None:
@@ -57,6 +83,8 @@ def _resolve_github_token(
         )
     if not github_repo:
         return None
+    if not github_token:
+        _warn_if_token_file_shared(github_token_file)
     try:
         return get_github_token(github_token, github_token_file)
     except OSError as exc:
@@ -330,6 +358,56 @@ def mcp_command(root, offline):
     from cli.mcp_server import run
 
     run(root=root, live=not offline)
+
+
+@cli.command(name="trust")
+@click.argument("path", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--base",
+    "base",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Earlier copy of the file (e.g. `git show main:poetry.lock > base.lock`): "
+    "only dependencies added or changed since then are checked",
+)
+@click.option("--offline", is_flag=True, help="No network: lookalike indicators only")
+@click.option("--json", "as_json", is_flag=True, help="Print the full trust block as JSON")
+def trust_command(path, base, offline, as_json):
+    """Trust checks for PyPI and npm dependencies (report-only, track T).
+
+    Registry existence, provenance (PyPI) and lookalike-name indicators for
+    the dependencies added since --base, or for every dependency without it.
+    Never part of a verdict, and never a failing exit: review what is listed.
+    """
+    import json as _json
+
+    from core import agent_tools
+
+    lookups = None if offline else agent_tools.Lookups(cache_dir=agent_tools.default_cache_dir())
+    try:
+        out = agent_tools.check_dependency_file(
+            path, lookups=lookups, live=not offline, base_path=base, trust_all=base is None
+        )
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    trust = out["trust"]
+    if as_json:
+        click.echo(_json.dumps(trust, indent=2, sort_keys=True))
+        return
+    click.echo(
+        f"{path}: {trust['dependencies']} dependencies ({trust['scope']}), "
+        f"{trust['live_checked']} checked live, {trust['live_capped']} capped, "
+        f"{trust['not_supported']} not PyPI or npm"
+    )
+    for check, counts in trust["counts"].items():
+        shown = ", ".join(f"{status} {n}" for status, n in counts.items() if n)
+        click.echo(f"  {check}: {shown or 'none'}")
+    for item in trust["attention"]:
+        dep = item["dependency"]
+        click.echo(
+            f"  ! {dep['package']} {dep.get('version') or ''} ({dep['ecosystem']}) "
+            f"{item['check']} {item['status']}: {item['statement']}"
+        )
+    click.echo(f"note: {trust['note']}")
 
 
 @cli.command(name="dependency-track")
@@ -1001,6 +1079,96 @@ def _coverage_summary(inspections) -> tuple[str, list[str]]:
     return status, reasons
 
 
+def _coverage_note(inspections) -> str | None:
+    """One line for the rendered body when a repository was not fully read (#102).
+
+    The terminal preamble alone is not enough: the body is what reaches a
+    webhook, and "nothing upcoming" over an unread repository is unknown
+    dressed as clear. None when every inspection is COMPLETE or no
+    repository was inspected, so those outputs are unchanged.
+    """
+    if not inspections:
+        return None
+    status, reasons = _coverage_summary(inspections)
+    if status == "COMPLETE":
+        return None
+    why = "; ".join(reasons) or "no reason recorded"
+    return (
+        f"⚠️ Repository inspection coverage: {status} — {why}. "
+        "Results are not a clean bill of health."
+    )
+
+
+def _load_webhook_secret(secret_file: str | None) -> bytes | None:
+    """Webhook signing secret (W3), or None. Errors never contain the secret."""
+    from core.webhook_signing import WebhookSecretError, load_webhook_secret
+
+    try:
+        return load_webhook_secret(secret_file)
+    except OSError as exc:
+        raise click.ClickException(
+            f"cannot read webhook secret file: {exc.strerror or exc}"
+        ) from exc
+    except (WebhookSecretError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+def _deliver_alerts(
+    webhook, allow_http, root, results, events, inspections, signing_secret=None
+) -> None:
+    """Post only alerts not yet delivered, with retry and dead letter (W1, #78).
+
+    Never fails the check: delivery problems are reported, and the
+    verdict and exit code stay the check's own.
+    """
+    from functools import partial
+
+    from core.delivery import collect_alerts, deliver, render_alerts
+    from core.notify import WebhookPolicy, post_digest
+
+    coverage = None
+    if inspections:
+        status, reasons = _coverage_summary(inspections)
+        coverage = {"status": status, "reasons": reasons}
+    alerts = collect_alerts(results, events, coverage)
+    post = partial(
+        post_digest,
+        webhook,
+        policy=WebhookPolicy(allow_http=allow_http),
+        signing_secret=signing_secret,
+    )
+    try:
+        report = deliver(
+            root,
+            alerts,
+            post,
+            partial(render_alerts, coverage_note=_coverage_note(inspections)),
+        )
+    except TimeoutError:
+        _echo("delivery state busy - another run is delivering; nothing posted this run")
+        return
+    if report["sent"] and report["delivered"]:
+        _echo(f"posted {report['sent']} new alert(s) (http {report['status_code']})")
+    elif report["sent"]:
+        # Delivery failure must not mask the check result itself.
+        _echo(f"webhook delivery failed: {report['error']}")
+        pending = report["sent"] - report["dead_lettered"]
+        if pending:
+            _echo(f"{pending} alert(s) pending: retried on a later run")
+    else:
+        _echo("no new alerts: nothing posted")
+    if report["already_delivered"] or report["waiting"]:
+        _echo(
+            f"{report['already_delivered']} alert(s) already delivered, "
+            f"{report['waiting']} waiting for retry backoff"
+        )
+    if report["dead_lettered"]:
+        _echo(
+            f"dead-lettered {report['dead_lettered']} alert(s) after repeated failures: "
+            f"see {root}/alerts.json"
+        )
+
+
 def _echo_run_coverage(inspections) -> str:
     """Print the run-level repository coverage (if any) and return it."""
     status, reasons = _coverage_summary(inspections)
@@ -1017,7 +1185,7 @@ def _github_auth_options(func):
         "--github-token-file",
         type=click.Path(exists=True, dir_okay=False),
         default=None,
-        help="Read a GitHub token from the first line of PATH (maximum 4 KiB)",
+        help="Read a GitHub token from PATH: one non-empty line, visible ASCII (maximum 4 KiB)",
     )(func)
     func = click.option(
         "--github-token",
@@ -1086,7 +1254,7 @@ def _load_check_inputs(
         elif skipped:
             _echo(f"sbom: 0 mapped, {len(skipped)} skipped — nothing checkable in this SBOM")
         for line in skipped:
-            _echo(f"! skipped: {line}")
+            _echo(f"! skipped: {strip_unsafe(line)}")
     if spdx:
         from core.sbom_reader import read_spdx
 
@@ -1105,7 +1273,7 @@ def _load_check_inputs(
         elif spdx_skipped:
             _echo(f"spdx: 0 mapped, {len(spdx_skipped)} skipped — nothing checkable in this SPDX")
         for line in spdx_skipped:
-            _echo(f"! skipped: {line}")
+            _echo(f"! skipped: {strip_unsafe(line)}")
     if images:
         from core.image_inventory import read_image_inventory
 
@@ -1114,7 +1282,7 @@ def _load_check_inputs(
         except ValueError as e:
             raise click.ClickException(f"{images}: {e}")
         for line in img_skipped:
-            _echo(f"! skipped: {line}")
+            _echo(f"! skipped: {strip_unsafe(line)}")
         if img_deps:
             _echo(f"images: {len(img_deps)} image ref(s) from inventory")
             deps = [*deps, *img_deps]
@@ -1143,7 +1311,7 @@ def _load_check_inputs(
                 f"{len(lock_skipped)} skipped — nothing checkable in this lockfile"
             )
         for line in lock_skipped:
-            _echo(f"! skipped: {line}")
+            _echo(f"! skipped: {strip_unsafe(line)}")
     if manifest:
         from core.manifest_reader import read_manifest
 
@@ -1169,7 +1337,7 @@ def _load_check_inputs(
                 f"{len(man_skipped)} skipped — nothing checkable in this manifest"
             )
         for line in man_skipped:
-            _echo(f"! skipped: {line}")
+            _echo(f"! skipped: {strip_unsafe(line)}")
     if github_repo:
         from core.github_reader import inspect_github_repo
 
@@ -1180,7 +1348,7 @@ def _load_check_inputs(
         for err in inspection.errors:
             _echo(f"! error: {err.get('safe_message', 'unknown error')}")
         for line in inspection.skipped:
-            _echo(f"! skipped: {line}")
+            _echo(f"! skipped: {strip_unsafe(line)}")
         for reason in inspection.coverage_reasons:
             _echo(f"! coverage: {reason}")
         _echo(f"github-repo ({github_repo}): inspection coverage {inspection.coverage}")
@@ -1282,14 +1450,15 @@ def _load_check_inputs(
     "--fail-on-partial",
     is_flag=True,
     help="Exit 1 when repository inspection coverage is PARTIAL or FAILED "
-    "(report-only by default; FAILED always fails under --strict)",
+    "(report-only by default; FAILED always fails under --strict or --fail-on)",
 )
 @click.option(
     "--fail-on",
     type=click.Choice(["affected", "review", "action", "critical"]),
     default=None,
     show_default=False,
-    help="CI exit threshold: affected, review, action, or critical",
+    help="CI exit threshold: affected, review, action, or critical. "
+    "Also exits 1 when repository inspection coverage is FAILED",
 )
 @click.option(
     "--ledger",
@@ -1318,6 +1487,23 @@ def _load_check_inputs(
     is_flag=True,
     help="Opt in to plain-http webhooks (https is required by default)",
 )
+@click.option(
+    "--delivery-state",
+    "delivery_root",
+    default=".openpulse/deliveries",
+    envvar="OPENPULSE_DELIVERY_STATE",
+    show_default=True,
+    show_envvar=True,
+    help="Webhook delivery state: post each alert once, retry failures, dead-letter "
+    "after repeated failures ('' posts the whole digest every run)",
+)
+@click.option(
+    "--webhook-secret-file",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Sign webhook posts with the secret on the first line of PATH "
+    "(or set OPENPULSE_WEBHOOK_SECRET); receivers verify X-OpenPulse-Signature",
+)
 @_history_key_option
 def check(
     watchlist,
@@ -1334,6 +1520,8 @@ def check(
     digest,
     webhook,
     webhook_allow_http,
+    delivery_root,
+    webhook_secret_file,
     fail_on_partial,
     github_repo="",
     github_token="",
@@ -1348,6 +1536,7 @@ def check(
     from core.risk.check import check_dependency
 
     github_token = _resolve_github_token(github_repo, github_token, github_token_file)
+    signing_secret = _load_webhook_secret(webhook_secret_file) if webhook else None
     deps, loaded_events, bundles, inspections = _load_check_inputs(
         watchlist,
         sbom,
@@ -1361,8 +1550,11 @@ def check(
         raw_bundle_dir,
     )
     run_coverage = _echo_run_coverage(inspections)
-    coverage_failed = run_coverage == "FAILED"
-    coverage_blocked = fail_on_partial and run_coverage in ("PARTIAL", "FAILED")
+    # Any gate (--strict, --fail-on, --fail-on-partial) fails on a
+    # repository it could not read; PARTIAL fails only --fail-on-partial.
+    coverage_blocked = (fail_on_partial and run_coverage in ("PARTIAL", "FAILED")) or (
+        (strict or bool(fail_on)) and run_coverage == "FAILED"
+    )
     affected = 0
     # A flag, not a subcommand: digest is a presentation of the same run,
     # so --strict semantics stay identical in both shapes.
@@ -1435,13 +1627,26 @@ def check(
     if digest or webhook:
         from analyzers.report_analyst import render_check_digest
 
-        text = render_check_digest(results)
+        text = render_check_digest(results, coverage_note=_coverage_note(inspections))
         _echo(text)
-        if webhook:
+        if webhook and delivery_root:
+            _deliver_alerts(
+                webhook,
+                webhook_allow_http,
+                delivery_root,
+                results,
+                loaded_events,
+                inspections,
+                signing_secret,
+            )
+        elif webhook:
             from core.notify import WebhookPolicy, post_digest
 
             delivery = post_digest(
-                webhook, text, policy=WebhookPolicy(allow_http=webhook_allow_http)
+                webhook,
+                text,
+                policy=WebhookPolicy(allow_http=webhook_allow_http),
+                signing_secret=signing_secret,
             )
             if delivery["ok"]:
                 _echo(f"posted digest (http {delivery['status_code']})")
@@ -1455,7 +1660,8 @@ def check(
         threshold = fail_on or ("action" if strict else "")
         if threshold and fail_on_threshold(results, threshold):
             raise SystemExit(1)
-        if coverage_blocked or (strict and coverage_failed):
+        if coverage_blocked:
+            _echo(f"repository inspection coverage {run_coverage}: gate failed")
             raise SystemExit(1)
         return
     for dep, result in zip(deps, results):
@@ -1494,7 +1700,8 @@ def check(
         raise SystemExit(1)
     if strict and strict_affected(results):
         raise SystemExit(1)
-    if coverage_blocked or (strict and coverage_failed):
+    if coverage_blocked:
+        _echo(f"repository inspection coverage {run_coverage}: gate failed")
         raise SystemExit(1)
 
 
@@ -1605,7 +1812,7 @@ def digest(
     github_token = _resolve_github_token(github_repo, github_token, github_token_file)
     if ledger_root == "":
         ledger_root = None  # read digests without a ledger: no lead-time claims
-    deps, loaded_events, bundles, _inspections = _load_check_inputs(
+    deps, loaded_events, bundles, inspections = _load_check_inputs(
         watchlist,
         sbom,
         spdx,
@@ -1640,6 +1847,8 @@ def digest(
         window_days=window_days,
         history_keys=_history_keyring(history_key_file, history_previous_keys_file, ledger_root),
     )
+    if note := _coverage_note(inspections):
+        built["coverage_note"] = note
     if output == "json":
         import json as _json
 
@@ -1729,6 +1938,14 @@ def digest(
     show_default=True,
     help="Durable first-detection ledger root (read-only; `openpulse check` records)",
 )
+@click.option(
+    "--fail-on",
+    "fail_on",
+    type=click.Choice(["overdue", "critical", "high", "medium", "low"]),
+    default=None,
+    help="CI gate: exit 1 when a deadline at or above this severity is in the window "
+    "(critical includes overdue), or when repository inspection coverage is FAILED",
+)
 @_history_key_option
 def warnings(
     watchlist,
@@ -1742,6 +1959,7 @@ def warnings(
     window_days,
     output,
     ledger_root,
+    fail_on=None,
     github_repo="",
     github_token="",
     github_token_file=None,
@@ -1758,7 +1976,7 @@ def warnings(
     github_token = _resolve_github_token(github_repo, github_token, github_token_file)
     if ledger_root == "":
         ledger_root = None  # read warnings without a ledger: no lead-time claims
-    deps, loaded_events, bundles, _inspections = _load_check_inputs(
+    deps, loaded_events, bundles, inspections = _load_check_inputs(
         watchlist,
         sbom,
         spdx,
@@ -1793,12 +2011,38 @@ def warnings(
         window_days=window_days,
         history_keys=_history_keyring(history_key_file, history_previous_keys_file, ledger_root),
     )
+    if note := _coverage_note(inspections):
+        built["coverage_note"] = note
     if output == "json":
         import json as _json
 
         _echo(_json.dumps(built, indent=2))
-        return
-    _echo(render_warnings_md(built))
+    else:
+        _echo(render_warnings_md(built))
+    if fail_on:
+        _warnings_gate(built, fail_on, inspections)
+
+
+def _warnings_gate(built, fail_on, inspections) -> None:
+    """`warnings --fail-on`: exit 1 on a deadline at or above the severity (W2).
+
+    Printed to stderr, so `--output json` stays parseable. As every other
+    gate, it never passes on a repository it could not read.
+    """
+    from core.warnings import gate_breaches
+
+    breaches = gate_breaches(built, fail_on)
+    if breaches:
+        severities = sorted({w["severity"] for w in breaches})
+        _echo(
+            f"fail-on {fail_on}: {len(breaches)} deadline(s) at or above "
+            f"{fail_on.upper()} ({', '.join(severities)})",
+            err=True,
+        )
+        raise SystemExit(1)
+    if inspections and _coverage_summary(inspections)[0] == "FAILED":
+        _echo("repository inspection coverage FAILED: gate failed", err=True)
+        raise SystemExit(1)
 
 
 @cli.command()
@@ -1893,7 +2137,7 @@ def warnings(
     type=click.Choice(["affected", "review", "action", "critical"]),
     default=None,
     help="Exit 1 after writing every output when the same threshold `check --fail-on` "
-    "uses is breached",
+    "uses is breached, or when repository inspection coverage is FAILED",
 )
 def attest(
     watchlist,
@@ -2024,7 +2268,7 @@ def attest(
         for err in inspection.errors:
             _echo(f"! error: {err.get('safe_message', 'unknown error')}", err=True)
         for line in inspection.skipped:
-            _echo(f"! skipped: {line}", err=True)
+            _echo(f"! skipped: {strip_unsafe(line)}", err=True)
         for reason in inspection.coverage_reasons:
             _echo(f"! coverage: {reason}", err=True)
         _echo(
@@ -2065,7 +2309,10 @@ def attest(
     # Repository-level coverage: a FAILED/PARTIAL scan must reach every
     # emitted contract, even when the dependency came from another input,
     # so a partially read repository is never attested as clean.
-    coverage_override = None
+    # No repository in the run (watchlist/SBOM/lockfile/manifest/images):
+    # contract 2.1 says NOT_APPLICABLE, not COMPLETE coverage of a scan
+    # that never happened (#109).
+    coverage_override = {"status": "NOT_APPLICABLE", "reasons": []}
     if inspections:
         run_status, run_reasons = _coverage_summary(inspections)
         _echo(f"repository inspection coverage: {run_status}", err=True)
@@ -2152,6 +2399,10 @@ def attest(
         ]
         if fail_on_threshold(combined, fail_on):
             _echo(f"fail-on {fail_on}: threshold breached", err=True)
+            raise SystemExit(1)
+        # A gate never passes on a repository it could not read.
+        if coverage_override and coverage_override["status"] == "FAILED":
+            _echo("repository inspection coverage FAILED: gate failed", err=True)
             raise SystemExit(1)
 
 
@@ -2280,6 +2531,8 @@ def discover(
             "--github-token-file instead",
             err=True,
         )
+    if not github_token:
+        _warn_if_token_file_shared(github_token_file)
     try:
         token = get_github_token(github_token, github_token_file)
     except OSError as exc:

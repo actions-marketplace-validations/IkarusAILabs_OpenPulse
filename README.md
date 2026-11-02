@@ -56,7 +56,7 @@ permissions:
 steps:
   - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     with: {persist-credentials: false}
-  - uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.9.0
+  - uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.12.0
     with:
       manifest: requirements.txt
       fail-on: action   # fail only on ACTION/CRITICAL findings
@@ -69,7 +69,7 @@ Inputs, permissions, SARIF levels and full workflows: [docs/GITHUB_ACTION.md](do
 AI agents add and upgrade dependencies faster than anyone reviews them. `openpulse mcp` is an [MCP](https://modelcontextprotocol.io) server that lets Claude Code, Cursor, Copilot and other MCP clients ask OpenPulse **before** they change a dependency.
 
 ```bash
-pip install "ikarus-openpulse[mcp] @ git+https://github.com/IkarusAILabs/OpenPulse@v0.9.0"
+pip install "ikarus-openpulse[mcp] @ git+https://github.com/IkarusAILabs/OpenPulse@v0.12.0"
 claude mcp add openpulse -- openpulse mcp      # Claude Code
 ```
 
@@ -266,8 +266,47 @@ everything else. We do not compete on EOL record counts.
   EMERGING).
 - **AI coding agents (MCP)**: `openpulse mcp` gives Claude Code, Cursor, Copilot and other MCP clients three read-only tools (`dependency_status`, `check_dependency_file`, `project_lifecycle`) backed by live endoflife.date, OSV and GitHub lookups and the same verdict engine as `check` ([docs/MCP.md](docs/MCP.md)).
 - **Security-team tools**: `attest --defectdojo` writes DefectDojo Generic Findings, and `openpulse dependency-track` pushes affected findings into Dependency-Track as INTERNAL vulnerabilities. Both are built from the same evidence contracts as SARIF.
-- **CLI**: validate events, run analysts live or offline, observe registries, sweep the catalog, render per-project Pulse, generate monthly reports, check watchlists, CycloneDX or SPDX SBOMs, npm/poetry/Cargo lockfiles, requirements/pyproject/pom/go.mod/Cargo manifests (namespaced Maven POMs included), and GitHub repositories (`--github-repo`, commit- and blob-SHA-pinned, with COMPLETE/PARTIAL/FAILED inspection coverage; manifests, lockfiles, SBOMs and image lists found in the repo are all read) with digest + webhook delivery, show upcoming deadlines (`openpulse digest`, `openpulse warnings`), emit evidence-contract 2.0 documents (`openpulse attest`), and replay the Bitnami case end to end. Webhook delivery enforces an SSRF policy (https by default; `--webhook-allow-http` opts in) and never prints the webhook URL path; pass the URL as `OPENPULSE_WEBHOOK_URL` and tokens as `GITHUB_TOKEN` to keep them out of the process list.
+- **CLI**: validate events, run analysts live or offline, observe registries, sweep the catalog, render per-project Pulse, generate monthly reports, check watchlists, CycloneDX or SPDX SBOMs, npm/poetry/Cargo lockfiles, requirements/pyproject/pom/go.mod/Cargo manifests (namespaced Maven POMs included), and GitHub repositories (`--github-repo`, commit- and blob-SHA-pinned, with COMPLETE/PARTIAL/FAILED inspection coverage; manifests, lockfiles, SBOMs and image lists found in the repo are all read) with digest + webhook delivery, show upcoming deadlines (`openpulse digest`, `openpulse warnings`), emit evidence-contract 2.1 documents (`openpulse attest`), and replay the Bitnami case end to end. Webhook delivery enforces an SSRF policy (https by default; `--webhook-allow-http` opts in) and never prints the webhook URL path; pass the URL as `OPENPULSE_WEBHOOK_URL` and tokens as `GITHUB_TOKEN` to keep them out of the process list.
 - **740+ offline tests** (count reported by CI), `ruff` clean, CI green (Linux + Windows, incl. CodeQL + pip-audit, lock-drift check, deterministic SBOM, secret tripwire).
+
+## What's new in v0.12
+
+v0.12.0 "Trusted Inputs" is track T Phase 1: an AI coding agent can check whether a dependency is trustworthy before adding it. Every check is evidence to review, never part of a verdict. Full notes: [`CHANGELOG.md`](CHANGELOG.md).
+
+- **Digest integrity.** For `package-lock.json` and `poetry.lock`, each locked digest is compared with what npm or PyPI publishes. A mismatch means the locked artifact is not the one the registry serves.
+- **PyPI provenance.** PEP 740 attestations are verified with Sigstore through the optional, hash-locked `[provenance]` extra. For curated projects, the publisher is checked against the known repository.
+- **Lookalike names.** A PyPI or npm name that resembles a popular one is flagged, naming the rule (separator, edit distance, confusable, scope) and the name it matched. This is an indicator, never a typosquat verdict.
+- **Check what a change adds.** `check_dependency_file` with `base_path`, or `openpulse trust FILE --base EARLIER`, runs these checks only on dependencies added or changed since the base.
+- **Untrusted text stays out.** Identifiers are validated against registry grammars, and file text is never echoed to an agent.
+
+## What's new in v0.11
+
+**v0.11.1 (patch):**
+- Whole-catalog reports get every project's NVD answer: requests are paced, retried, and use `NVD_API_KEY` if set.
+- A source that fails is named in the report as "unknown, not absent".
+- The MCP tools refuse and never echo non-identifier input.
+
+
+v0.11.0 "Early Warning Operations" makes scheduled alerts dependable and adds the first track T check for AI coding agents. Full notes: [`CHANGELOG.md`](CHANGELOG.md).
+
+- **Webhook change: please read before upgrading.** A scheduled `check --webhook` posts each alert once, not the whole digest every run. Failed posts are retried with backoff and dead-lettered after 5 failed runs. State lives in `.openpulse/deliveries`; cache it in CI like the ledger ([`docs/SCHEDULED_CHECKS.md`](docs/SCHEDULED_CHECKS.md)). `--delivery-state ''` restores the old behaviour.
+- **Signed webhooks.** With `OPENPULSE_WEBHOOK_SECRET`, every post carries an HMAC signature and timestamp. A receiver verifies them with a stdlib-only function that rejects replays older than 5 minutes.
+- **Deadline gate.** `warnings --fail-on critical` fails a CI job on a CRITICAL or OVERDUE deadline.
+- **Does this package exist?** `dependency_status` reports whether a PyPI or npm package and version exist in their registry. A name an agent invented shows up as not found, never as an UNKNOWN. This is the first item of track T, AI dependency trust ([`docs/research/TRACK_T_PHASE0.md`](docs/research/TRACK_T_PHASE0.md)).
+- **MCP limits stated.** Every answer reports its lookup budget, and lookups the budget or a per-file cap skipped are named. `project_lifecycle` caches across sessions.
+
+## What's new in v0.10
+
+v0.10.0 "Verified Releases & Safe Gates" makes releases verifiable and closes the places where an unread input could pass for a clean one. Full notes: [`CHANGELOG.md`](CHANGELOG.md).
+
+- **Gate change: please read before upgrading.** `--fail-on`, in the CLI and the Action's `fail-on`, now fails when a `--github-repo` scan FAILED: a gate never passes on a repository OpenPulse could not read. PARTIAL still fails only `--fail-on-partial`.
+- **Evidence contract 2.1.0.** Runs that inspect no repository (watchlist, SBOM, lockfile, manifest, images) say `NOT_APPLICABLE` coverage instead of `COMPLETE`. Validate against `schemas/evidence-contract/v2.1/schema.json`.
+- **Coverage in every body.** `digest`, `warnings` and the `check --webhook` message say when a repository was not fully read.
+- **Attested releases.** A tag builds the sdist, wheel, SBOM and `SHA256SUMS` with hash-locked tools and signs build provenance for each file. Check a download with `gh attestation verify <file> --repo IkarusAILabs/OpenPulse`.
+- **Hardening.**
+  - Webhooks connect only to the address that passed the SSRF check (DNS-pinned, with IPv4-mapped, 6to4 and NAT64 forms unwrapped).
+  - `--github-token-file` takes one validated line and warns when other users can read it.
+  - CI drops the job token after checkout, its guard now catches every way pytest can quietly skip tests, and the secret tripwire skips only its own file and virtualenvs.
 
 ## What's new in v0.9
 
@@ -338,7 +377,7 @@ openpulse check --images data/fixtures/images/inventory_sample.txt --event data/
    # unpinned/workspace entries are skipped with reasons, never range-guessed)
 openpulse check --lockfile data/fixtures/lockfiles/poetry.lock --event data/fixtures/django-eol/event.json
 
-    # emit one evidence-contract (2.0) JSON document per dependency x event pair (JSONL)
+    # emit one evidence-contract (2.1) JSON document per dependency x event pair (JSONL)
 openpulse attest --watchlist data/fixtures/watchlist_sample.yaml --event data/fixtures/bitnami/event.json
 
     # same contracts as SARIF 2.1.0 (GitHub Code Scanning) + a Markdown summary;
@@ -357,13 +396,15 @@ openpulse check --manifest data/fixtures/manifests/requirements.txt --event data
 # 7. Check a whole GitHub repository (public; for private repositories,
 #    prefer GITHUB_TOKEN or a token file so the credential is not exposed in argv)
 openpulse check --github-repo owner/repo --event data/fixtures/bitnami/event.json
+chmod 600 ~/.config/openpulse/github-token   # OpenPulse warns when other users can read it
 openpulse check --github-repo owner/private-repo --github-token-file ~/.config/openpulse/github-token --event data/fixtures/bitnami/event.json
 
 # 8. Upcoming deadlines for your dependencies (90-day window; `check --ledger` records first detection)
 openpulse warnings --watchlist data/fixtures/watchlist_sample.yaml --event data/fixtures/django-eol/event.json
 openpulse digest   --watchlist data/fixtures/watchlist_sample.yaml --event data/fixtures/django-eol/event.json
 
-# 9. Post the check digest to Slack-style webhooks (URL via env var, never argv)
+# 9. Post new alerts to Slack-style webhooks (URL via env var, never argv);
+#    each alert is posted once, failures are retried (docs/SCHEDULED_CHECKS.md)
 OPENPULSE_WEBHOOK_URL=https://hooks.slack.com/services/...   openpulse check --watchlist data/fixtures/watchlist_sample.yaml --event data/fixtures/bitnami/event.json --digest
 
 # 10. Discover changes in what your dependencies name (repositories moved or archived),
@@ -449,14 +490,14 @@ tests/              # 740+ offline tests (no network in CI)
 | `docs/BITNAMI_VALIDATION.md` | The Phase-3 acceptance gate |
 | `docs/MCP.md` | OpenPulse for AI coding agents: setup per client, tools, example answer, security model |
 | `docs/GITHUB_ACTION.md` | The GitHub Action: inputs, permissions, SARIF levels, workflows |
-| `docs/EVIDENCE_CONTRACT.md` | Evidence contract 2.0 (and 1.0 / 1.1 / 1.2) — machine-readable dependency verdicts |
+| `docs/EVIDENCE_CONTRACT.md` | Evidence contract 2.1 (and 1.0 / 1.1 / 1.2 / 2.0) — machine-readable dependency verdicts |
 | `docs/NEXT_PHASES.md` | Implementation plan v0.7 → v0.10: release and distribution, hardening, Anchored Trust, M6 operations, supply chain |
 | `CHANGELOG.md` | What changed in each release |
 | `SECURITY.md` | How to report a vulnerability, supported versions, known limitations |
 
 ## Roadmap
 
-M1 Trusted Evidence ✅ done (maintenance) → M2 Upstream Discovery ✅ acceptance met (5 verified cases; 5 live-replayed) → M3 Report Product ✅ briefing + metadata live → M4 Benchmark 🔨 11 of 10–15 formalized → M5 Dependency Context ✅ (watchlist, SBOM, image inventory, lockfile, manifest and GitHub-repo inputs on one verdict engine) → M6 Early Warning 🔨 (ledger, digest, warnings, webhook shipped; delivery state, dedup/retry and CI/PR integration next) → M7 Network → M8 AI-mediated direction → M9 combined assurance experiment (research). Full sequence, layers, principles, metrics: [`docs/ROADMAP.md`](docs/ROADMAP.md); research framing: [`docs/research/RESEARCH_ALIGNMENT.md`](docs/research/RESEARCH_ALIGNMENT.md); P0–P3 backlog: [`docs/research/BACKLOG.md`](docs/research/BACKLOG.md).
+M1 Trusted Evidence ✅ done (maintenance) → M2 Upstream Discovery ✅ acceptance met (5 verified cases; 5 live-replayed) → M3 Report Product ✅ briefing + metadata live → M4 Benchmark 🔨 11 of 10–15 formalized → M5 Dependency Context ✅ (watchlist, SBOM, image inventory, lockfile, manifest and GitHub-repo inputs on one verdict engine) → M6 Early Warning 🔨 (ledger, digest, warnings, webhook and persistent delivery state with dedup/retry shipped; CI/PR integration next) → M7 Network → M8 AI-mediated direction → M9 combined assurance experiment (research). Full sequence, layers, principles, metrics: [`docs/ROADMAP.md`](docs/ROADMAP.md); research framing: [`docs/research/RESEARCH_ALIGNMENT.md`](docs/research/RESEARCH_ALIGNMENT.md); P0–P3 backlog: [`docs/research/BACKLOG.md`](docs/research/BACKLOG.md).
 
 Planned, not available: **AI Dependency Trust Assurance — Know Why You Trust Your Dependencies** (ROADMAP track T). It is a separate future study that would add evidence on package identity and impersonation, artifact provenance (Sigstore, SLSA, PEP 740), and reputation integrity to the MCP tools and CI policy. None of it ships today. OpenPulse does not detect malware, verify provenance, or score reputation, and an MCP answer is advice to the agent, not a security boundary.
 

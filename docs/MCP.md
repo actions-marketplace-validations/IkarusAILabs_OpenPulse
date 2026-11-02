@@ -14,9 +14,11 @@ Every answer is evidence, not a decision. It names its sources, lists what it co
 ## Install
 
 ```bash
-pip install "ikarus-openpulse[mcp] @ git+https://github.com/IkarusAILabs/OpenPulse@v0.9.0"
+pip install "ikarus-openpulse[mcp] @ git+https://github.com/IkarusAILabs/OpenPulse@v0.12.0"
 openpulse mcp --help
 ```
+
+To also verify PyPI provenance (attestations) in `dependency_status`, install the `provenance` extra as well (Python 3.11+): `ikarus-openpulse[mcp,provenance]`. It adds about 24 packages (sigstore and its dependencies), hash-locked in `requirements-provenance.lock`. Without it, the `provenance` field says NOT_PERFORMED and how to enable it.
 
 OpenPulse is distributed as **`ikarus-openpulse`**. Don't `pip install openpulse`: that name on PyPI is an unrelated project (OpenQASM's pulse AST), and it has no `mcp` command. Until `ikarus-openpulse` is published on PyPI, install from the pinned release tag as above.
 
@@ -87,7 +89,7 @@ On Windows the interpreter is `Scripts\python.exe`, and JSON needs escaped backs
 | Tool | Arguments | Answers |
 |---|---|---|
 | `dependency_status` | `package` + `ecosystem` + `version`, **or** `image` | One dependency: end-of-life / end-of-support for its version, curated upstream changes, OSV advisories that affect this version, repository health as context |
-| `check_dependency_file` | `path` (relative to the project root) | Every pinned entry of a manifest (`requirements.txt`, `pyproject.toml`, `pom.xml`, `go.mod`, `Cargo.toml`), lockfile (`package-lock.json`, `poetry.lock`, `Cargo.lock`), CycloneDX/SPDX SBOM or image list. Unpinned entries are listed as skipped, never guessed |
+| `check_dependency_file` | `path` (relative to the project root); optional `base_path` (an earlier copy of the file, also inside the root) or `trust_all` | Every pinned entry of a manifest (`requirements.txt`, `pyproject.toml`, `pom.xml`, `go.mod`, `Cargo.toml`), lockfile (`package-lock.json`, `poetry.lock`, `Cargo.lock`), CycloneDX/SPDX SBOM or image list. Unpinned entries are listed as skipped, never guessed. With `base_path`, the PyPI and npm dependencies added or changed since the base get trust checks (`trust`) |
 | `project_lifecycle` | `project` (e.g. `django`, `nodejs`, `postgresql`) | Release cycles with end-of-life dates and which lines are supported today |
 
 All three are annotated read-only. Agents typically call `dependency_status` before adding or upgrading a dependency, `check_dependency_file` after editing a manifest or lockfile, and `project_lifecycle` when choosing a version.
@@ -152,6 +154,11 @@ How to read an answer:
 | `evaluation_context` | The time frame of the answer, the same block as evidence contract v1.2 plus `mode`. The tools run in `current` mode: a NOT_AFFECTED needs evidence fetched within `max_evidence_age_days` (default 90) of `as_of` (now), and an older event becomes RELATED ("stale"), never a clearance. The Python API (`core.agent_tools`) also offers `mode="replay"` for re-evaluating recorded evidence; it applies no bound, sets `freshness_bound_applied: false`, adds "evidence currency" to `not_established` and says so in `note` |
 | `advisories` | OSV advisories whose ranges include this version, listed with links. Advisories that only name the package are counted separately: their version applicability is not established |
 | `sources` | Which sources answered, failed (`error`), had no data (`no-data`) or were off (`disabled`) |
+| `registry_existence` | `dependency_status` only (track T, T-M1). Whether the PyPI or npm package and version exist in their registry, as records with a closed status: `VERIFIED_RELATIONSHIP` (found), `VERIFIED_FAILURE` (the registry answered 404: an identity fact, not evidence of malice), `NOT_PERFORMED` (unsupported ecosystem, offline, budget spent, registry unreachable, or a name outside the ecosystem's grammar). Each record has a fixed `statement`, the registry URL and `checked_at`. Never part of the verdict |
+| `digest_integrity` | `check_dependency_file` on a `package-lock.json` or `poetry.lock` (track T, T-B4). Each locked digest is compared with what PyPI or npm publishes for that version. Counts per status: `VERIFIED_RELATIONSHIP` (every locked digest is published), `VERIFIED_FAILURE` (one isn't: the locked artifact is not the one the registry serves; each listed under `failures`), `MISSING_EVIDENCE` (the lockfile pins no usable digest), `NOT_PERFORMED` (the registry didn't answer, offline, budget spent, or capped past the per-file limit). Never part of a verdict |
+| `provenance` | `dependency_status` for a PyPI package with a version (track T, T-B1). PEP 740 attestations from PyPI's Integrity API are verified for up to 4 files of the release (wheels first) with `pypi-attestations`, and the publisher is cross-checked against the catalog's repository for curated packages. `VERIFIED_RELATIONSHIP` (verified; says where and how the files were built, **not** that they are benign), `VERIFIED_FAILURE` (an attestation doesn't verify, or the publisher names another repository), `MISSING_EVIDENCE` (no provenance published: most packages publish none, so not evidence of a problem), `NOT_PERFORMED` (the `[provenance]` extra isn't installed, offline, budget spent or PyPI unreachable). Never part of a verdict |
+| `trust` | `check_dependency_file` with `base_path` (added or changed dependencies) or `trust_all` (every dependency); null otherwise (v0.12.0 U5). For PyPI and npm packages: `registry_existence`, `provenance` (PyPI) and `lookalike`, as in `dependency_status`. `counts` per check and status; `attention` lists each `CONFIRMED_MALICIOUS`, `VERIFIED_FAILURE` or `SUSPICIOUS_INCONCLUSIVE` record with its dependency. The live checks run for at most 40 packages per file (`live_checked`, `live_capped`), before the file-wide lookups so additions get the budget first; lookalike runs for every package. `not_supported` counts other ecosystems and images. Never part of a verdict. The CLI equivalent is `openpulse trust FILE --base EARLIER` |
+| `lookalike` | `dependency_status` for PyPI and npm names (track T, T-A2). Rules: `separator` (equal without `-_.`), `edit_distance` (within 1 edit, 2 for names of 10+), `confusable` (UTS #39 ASCII skeleton: `1`/`I`/`|` as `l`, `0` as `O`, `m` as `rn`), `scope` (npm `@x/name` where `name` is a reference). References: the curated catalog and pinned popular-name lists (npm: npm-high-impact 1.13.0, MIT; PyPI: a dated download query, once a maintainer has run it). `SUSPICIOUS_INCONCLUSIVE` (rules fired, each naming its reference: an indicator, never a typosquat verdict), `VERIFIED_RELATIONSHIP` (the name is a reference), `MISSING_EVIDENCE` (nothing fired, which is not evidence the name is authentic). Local data only; never part of a verdict |
 | `not_established` | What this answer does not cover. An unreachable source makes its part UNKNOWN, never "fine" |
 
 ## Where the answers come from
@@ -163,13 +170,18 @@ The tools use the same pipeline as `openpulse check`. There is one verdict engin
 - **Advisories**: [OSV](https://osv.dev) for the project's catalogued package.
 - **Repository health**: GitHub repository metadata (archived flag, last push, license). This is shown as context only and never changes the verdict. Set `GITHUB_TOKEN` for higher rate limits.
 
-Live lookups are cached per server session, one fetch per project. A file check looks up at most 40 projects and 300 dependencies.
+Limits are stated in the answer, never applied silently (v0.11.0):
+
+- **Lookup budget.** One server session makes at most 200 live lookups (one per project; cached answers are free). Every answer carries a `lookups` block: `budget`, `used`, `remaining`, `timeout_seconds_per_source` (10) and `cache_ttl_seconds` (3600). Past the budget, no lookup is made. The answer lists `live lookups (session lookup budget spent …)` under `not_established`, and `project_lifecycle` returns a tool error that says so. Curated events still answer.
+- **Per-file cap.** A file check looks up at most 40 projects and 300 dependencies. Projects past the cap are listed in `live_lookups_capped`, and their answers say so under `not_established`.
+- **Cache.** Lookups are cached for an hour within a session. `project_lifecycle` also caches across sessions on disk, in `OPENPULSE_CACHE_DIR` (default: the user cache directory, `openpulse/lookups`; set it to an empty value to disable), with the same one-hour TTL. A lookup with a source error is never cached. An answer served from the disk cache gives its age in `cached_age_seconds`.
 
 ## Security model
 
 - **Read-only.** No tool writes or executes anything.
 - **Confined file access.** `check_dependency_file` only reads files inside the server's root (the directory it was started in, or `--root`). A prompt-injected agent cannot use OpenPulse to parse files elsewhere on the machine. Reads are size-bounded.
 - **Limited network.** The only hosts contacted are endoflife.date, api.osv.dev and api.github.com. `--offline` turns network access off entirely and answers from the curated events (`project_lifecycle` then explains that it needs live lookups).
+- **No text comes back from the caller (v0.12.0).** Package names, versions, ecosystems and image refs must be identifiers (letters, digits and a few separators: no whitespace, control, bidi, zero-width or Markdown characters). A tool argument that isn't one is refused, and a file entry that isn't one is skipped. Neither is ever repeated in the answer, so a name can't carry an instruction back to the agent.
 - **Errors with reasons.** Bad input (a path outside the root, an unrecognised file, a missing package name) comes back to the agent as a tool error with the reason, not an opaque failure.
 
 ## Troubleshooting

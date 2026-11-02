@@ -32,3 +32,20 @@ def ledger_clock_at_stamp(monkeypatch):
             return real(*args, detected_at=detected_at, **kwargs)
 
     monkeypatch.setattr(ledger, "record_detection", record)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_delivery_state(monkeypatch, tmp_path):
+    """`check --webhook` records delivery state (W1); never in the checkout."""
+    monkeypatch.setenv("OPENPULSE_DELIVERY_STATE", str(tmp_path / "deliveries"))
+    # project_lifecycle caches across sessions (W4); never in the real user cache.
+    monkeypatch.setenv("OPENPULSE_CACHE_DIR", str(tmp_path / "lookup-cache"))
+    # A developer's own signing secret must not sign the suite's webhooks (W3).
+    monkeypatch.delenv("OPENPULSE_WEBHOOK_SECRET", raising=False)
+    # Tests stay offline: the registry existence check (T-M1) gets no
+    # response unless a test injects a stub registry.
+    monkeypatch.setattr("core.registry_existence.default_head", lambda _url: 0)
+    monkeypatch.setattr("core.digest_integrity.default_fetch", lambda _url: (0, None))
+    monkeypatch.setattr("core.provenance.default_fetch_provenance", lambda _url: (0, None))
+    # NVD pacing and retry waits (collectors/nvd) are instant in tests.
+    monkeypatch.setattr("collectors.nvd.collector._sleep", lambda _seconds: None)

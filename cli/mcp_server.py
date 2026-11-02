@@ -51,14 +51,20 @@ def _answer(call: Callable[[], dict[str, Any]]) -> dict[str, Any]:
     """
     from mcp.server.mcpserver.exceptions import ToolError
 
+    from core.agent_tools import BudgetExhausted
+
     try:
         return call()
-    except (ValueError, OSError) as exc:
+    except (ValueError, OSError, BudgetExhausted) as exc:
         raise ToolError(str(exc)) from exc
 
 
-def build_server(root: str | Path = ".", live: bool = True) -> Any:
-    """The configured MCPServer (separate from `run` so tests can drive it)."""
+def build_server(root: str | Path = ".", live: bool = True, lookups: Any = None) -> Any:
+    """The configured MCPServer (separate from `run` so tests can drive it).
+
+    One ``Lookups`` per server session: its budget and cache span every call.
+    ``lookups`` is injectable for offline tests.
+    """
     from mcp.server.mcpserver import MCPServer
     from mcp.types import ToolAnnotations
 
@@ -66,7 +72,8 @@ def build_server(root: str | Path = ".", live: bool = True) -> Any:
     from core.version import openpulse_version
 
     project_root = Path(root).resolve()
-    lookups = agent_tools.Lookups() if live else None
+    if lookups is None and live:
+        lookups = agent_tools.Lookups(cache_dir=agent_tools.default_cache_dir())
     read_only = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=live)
     server = MCPServer(
         name="openpulse",
@@ -80,7 +87,9 @@ def build_server(root: str | Path = ".", live: bool = True) -> Any:
         package: str = "", version: str = "", ecosystem: str = "", image: str = ""
     ) -> dict[str, Any]:
         """Evidence for ONE dependency: end-of-life / end-of-support for its version,
-        curated upstream changes (distribution, license, support) and OSV advisories.
+        curated upstream changes (distribution, license, support) and OSV advisories,
+        plus whether a PyPI or npm package and version exist in their registry
+        (`registry_existence`: a name not found there may be hallucinated).
 
         Give either `package` (+ `ecosystem` such as PyPI, npm, Maven, Go, crates.io,
         and an exact `version`) or a container `image` ref such as `postgres:13`.
@@ -97,14 +106,26 @@ def build_server(root: str | Path = ".", live: bool = True) -> Any:
         )
 
     @server.tool(annotations=read_only)
-    def check_dependency_file(path: str) -> dict[str, Any]:
+    def check_dependency_file(
+        path: str, base_path: str = "", trust_all: bool = False
+    ) -> dict[str, Any]:
         """Check every pinned dependency in a manifest (requirements.txt, pyproject.toml,
         pom.xml, go.mod, Cargo.toml), lockfile (package-lock.json, poetry.lock,
         Cargo.lock), CycloneDX/SPDX SBOM or image list, relative to the project root.
-        Unpinned entries are listed as skipped, never guessed."""
+        Unpinned entries are listed as skipped, never guessed.
+
+        `base_path` is an earlier copy of the same file (for example the version
+        before your edit): the PyPI and npm dependencies added or changed since then
+        get trust checks in `trust` (registry existence, provenance, lookalike names).
+        `trust_all` runs them on every dependency instead. Trust checks are never part
+        of the verdict; review anything listed under `trust.attention`."""
         return _answer(
             lambda: agent_tools.check_dependency_file(
-                _confined(project_root, path), lookups=lookups, live=live
+                _confined(project_root, path),
+                lookups=lookups,
+                live=live,
+                base_path=_confined(project_root, base_path) if base_path else None,
+                trust_all=trust_all,
             )
         )
 

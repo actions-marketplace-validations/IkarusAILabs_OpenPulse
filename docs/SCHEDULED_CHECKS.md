@@ -47,6 +47,19 @@ jobs:
 `RELATED`/`UNKNOWN` never fail a gate. Keep the watchlist and the
 event files committed next to this recipe so every run is reproducible.
 
+To fail on **deadlines** instead (v0.11.0), gate on `warnings`:
+
+```yaml
+      - run: openpulse warnings --watchlist watchlists/prod.yaml --event events/current.json --fail-on critical
+```
+
+`--fail-on SEVERITY` exits 1 when a warning at or above that severity
+is in the window. The order is OVERDUE > CRITICAL (7 days or less) >
+HIGH (30) > MEDIUM (90) > LOW, so `critical` also fails on a deadline
+that has already passed. The reason goes to stderr, so `--output json`
+stays parseable. As with every gate, FAILED repository coverage fails
+it too. Without `--fail-on`, `warnings` only reports.
+
 ### Keyed history across runs (lead times in CI)
 
 A fresh runner starts with an empty `.openpulse/`, so the recipe above
@@ -123,10 +136,57 @@ openpulse check --watchlist watchlists/prod.yaml --event events/current.json \
   --digest --webhook "$SLACK_WEBHOOK_URL" --strict
 ```
 
-Posts the grouped digest to any JSON-text webhook (Slack incoming
-webhook contract: `{"text": "..."}`). Delivery failures warn but never
-mask the check result — `--strict` still reflects affected state only.
-Store the URL as an Actions secret, never in the repo.
+Posts to any JSON-text webhook (Slack incoming webhook contract:
+`{"text": "..."}`). Delivery failures warn but never mask the check
+result — `--strict` still reflects affected state only. Store the URL as
+an Actions secret, never in the repo.
+
+**Each alert is posted once (v0.11.0).** An alert is one affected cause
+of a verdict, or a repository that was not fully read. OpenPulse records
+what it delivered in `.openpulse/deliveries/alerts.json`
+(`--delivery-state` or `OPENPULSE_DELIVERY_STATE` to move it):
+
+- A run posts only alerts not delivered before, and nothing when there
+  are none. The terminal output still shows the full digest.
+- A revised event or a raised impact is a new alert.
+- A failed post is retried once in the run, then on later runs with a
+  backoff (5 minutes, doubling, at most 6 hours). After 5 failed runs
+  the alert is dead-lettered: kept in `alerts.json` with its last error
+  and never posted again.
+- The webhook URL is never stored.
+
+In GitHub Actions, carry the state in the cache like the ledger, or
+every run starts empty and posts everything again:
+
+```yaml
+      - uses: actions/cache@v4   # pin to a reviewed commit SHA
+        with:
+          path: .openpulse/deliveries
+          key: openpulse-deliveries-${{ github.run_id }}
+          restore-keys: openpulse-deliveries-
+```
+
+`--delivery-state ''` restores the old behaviour: the whole digest on
+every run.
+
+**Signed posts (v0.11.0).** Set `OPENPULSE_WEBHOOK_SECRET` (an Actions
+secret; `openssl rand -hex 32` makes one, at least 32 characters) or
+pass `--webhook-secret-file`. Every post then carries
+`X-OpenPulse-Timestamp` and `X-OpenPulse-Signature: v1=<hex>`. A
+receiver that holds the same secret checks them over the **raw** request
+body:
+
+```python
+from core.webhook_signing import verify_webhook_signature  # stdlib only; copy the file
+
+ok = verify_webhook_signature(
+    secret, raw_body,
+    headers.get("X-OpenPulse-Timestamp"), headers.get("X-OpenPulse-Signature"),
+)  # False for a wrong signature, or a timestamp more than 300 s off (a replay)
+```
+
+Slack and Teams incoming webhooks ignore the headers, so signing is
+harmless there; it matters for a receiver you run yourself.
 
 ## Watchlist format
 

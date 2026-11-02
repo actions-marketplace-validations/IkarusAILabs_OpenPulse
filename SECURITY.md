@@ -15,7 +15,7 @@ research-team commitments, not a commercial service level.
 | Version | Supported |
 |---|---|
 | `main` | ✅ |
-| latest 0.8.x release | ✅ |
+| latest 0.11.x release | ✅ |
 | older releases | ❌ (upgrade to the latest release) |
 
 ## Reporting a vulnerability
@@ -73,9 +73,6 @@ What to expect:
   refused, and `openpulse anchor` / `verify` detect deletions against a
   checkpoint kept outside the store. A holder of the key can still forge
   history between two anchors (`docs/KEYED_INTEGRITY.md`).
-- **Webhook DNS rebinding.** The webhook SSRF check resolves DNS before
-  connecting, so it is open to DNS rebinding. A DNS-pinned transport is
-  planned for v0.10.0.
 - **Unsigned contracts.** Evidence-contract documents are not signed. Their
   `signature` fields are always `null` in v1.
 - **No package-trust checks.** OpenPulse does not detect malicious
@@ -92,9 +89,18 @@ What to expect:
 - TLS verification is on everywhere, and collectors never follow
   redirects.
 - GitHub inspection is pinned to commit and blob SHAs, with bounds.
-- Webhooks are https-only, with an IP blocklist and a body cap.
+- Webhooks are https-only, with an IP blocklist and a body cap, and connect
+  only to the addresses that passed the check. With a webhook secret, every
+  post carries an HMAC signature a receiver can verify (v0.11.0).
 - Every file read is bounded, and every collector HTTP response is size-capped while it streams (decoded bytes, so compressed bombs are caught).
 - Every install in CI and in the GitHub Action is hash-checked (`--require-hashes`) against complete, hash-pinned locks; CI fails on any installed package the lock doesn't list.
 - CI actions are pinned by SHA and run with least privilege. CI also runs
   CodeQL, pip-audit, a lock-drift check, a deterministic SBOM and a secret
   tripwire.
+- From v0.10.0, every release is built by `.github/workflows/release.yml`
+  from its tag with hash-locked tools. The workflow refuses a tag that
+  differs from the package version. The sdist, wheel, CycloneDX SBOM and
+  `SHA256SUMS` on the GitHub release carry Sigstore-signed build
+  provenance. Check a downloaded file with
+  `gh attestation verify <file> --repo IkarusAILabs/OpenPulse`.
+  Releases are not on PyPI yet.
