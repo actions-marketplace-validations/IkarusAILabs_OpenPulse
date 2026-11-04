@@ -80,7 +80,7 @@ Two inputs bring track T's trust checks into the job. Both are off by default, s
 
 | Input | Values | What it does |
 |---|---|---|
-| `trust` | `off` (default), `pull-request`, `all` | Trust checks with live lookups: known-malicious records, registry existence, provenance, repository linkage and lookalike names. `pull-request` checks only the dependencies a pull request adds or changes, compared with the base branch's copy of `manifest` and `lockfile`. `all` checks every dependency on every run. Results are recorded in each contract's `trust_assurance` (evidence contract 2.2.0) |
+| `trust` | `off` (default), `pull-request`, `all` | Trust checks with live lookups: known-malicious records, registry existence, provenance, repository linkage, lookalike names, and the reputation indicators (publisher change, moved repository, young repository with many stars). `pull-request` checks only the dependencies a pull request adds or changes, compared with the base branch's copy of `manifest` and `lockfile`. `all` checks every dependency on every run. Results are recorded in each contract's `trust_assurance` (evidence contract 2.3.0) |
 | `policy` | a path, or empty | A trust policy ([`docs/TRUST_POLICY.md`](TRUST_POLICY.md)). Empty uses `.openpulse/policy.yml` when the repository has one. A prohibited condition fails the step, even with `fail-on: none` |
 
 ```yaml
@@ -93,7 +93,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.15.0
+      - uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.16.1
         with:
           manifest: requirements.txt
           lockfile: poetry.lock
@@ -124,7 +124,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.15.0
+      - uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.16.1
         with:
           gate: requirements.txt poetry.lock
       - run: pip install --require-hashes -r requirements.txt
@@ -143,7 +143,7 @@ jobs:
 Pin the action to a full commit SHA, as `.github/workflows/ci.yml` does for every action it uses:
 
 ```yaml
-- uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.15.0
+- uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.16.1
 ```
 
 The action pins its own dependencies by SHA too: `actions/setup-python` and `github/codeql-action/upload-sarif`.
@@ -175,7 +175,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.15.0
+      - uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.16.1
         with:
           manifest: requirements.txt
           lockfile: poetry.lock
@@ -208,7 +208,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - id: openpulse
-        uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.15.0
+        uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.16.1
         with:
           upload-sarif: 'true'
           fail-on: none            # report, do not fail the scheduled run

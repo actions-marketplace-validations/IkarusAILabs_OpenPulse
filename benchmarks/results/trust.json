@@ -1,16 +1,16 @@
 {
   "degraded": {
     "budget_spent": {
-      "cases": 28,
-      "cases_fully_unresolved": 28,
+      "cases": 35,
+      "cases_fully_unresolved": 35,
       "claims_without_evidence": 0,
-      "live_records": 140
+      "live_records": 280
     },
     "unreachable": {
-      "cases": 28,
-      "cases_fully_unresolved": 28,
+      "cases": 35,
+      "cases_fully_unresolved": 35,
       "claims_without_evidence": 0,
-      "live_records": 144
+      "live_records": 284
     }
   },
   "echo": {
@@ -51,7 +51,7 @@
       "false_positive_rate": 0.188,
       "false_positive_rate_without_scope": 0.097,
       "flagged": 188,
-      "ms_per_name": 46.4,
+      "ms_per_name": 47.8,
       "reference_names": 17336,
       "references": [
         {
@@ -112,10 +112,25 @@
       "publisher_changed_fields": {},
       "releases_compared": 480,
       "statuses": {
-        "MISSING_EVIDENCE": 7,
+        "MISSING_EVIDENCE": 112,
         "SUSPICIOUS_INCONCLUSIVE": 22,
-        "VERIFIED_RELATIONSHIP": 451
+        "VERIFIED_RELATIONSHIP": 346
       }
+    }
+  },
+  "organic_repository_moved": {
+    "answered": 123,
+    "excluded_not_repositories": 4,
+    "false_positive_rate": 0.0407,
+    "flagged": 5,
+    "moves": {
+      "transferred": 5
+    },
+    "repositories": 125,
+    "statuses": {
+      "MISSING_EVIDENCE": 2,
+      "SUSPICIOUS_INCONCLUSIVE": 5,
+      "VERIFIED_RELATIONSHIP": 118
     }
   },
   "organic_reputation": {
@@ -162,6 +177,17 @@
     }
   },
   "organic_sample": 1000,
+  "organic_young_popular_repository": {
+    "false_positive_rate": 0.0081,
+    "flagged": 1,
+    "flagged_repositories": [
+      "pydantic/httpx2"
+    ],
+    "max_age_days": 180,
+    "min_stars": 1000,
+    "repositories": 123,
+    "younger_than_max_age": 1
+  },
   "python": "3.14.6",
   "synthetic": {
     "per_check": {
@@ -220,6 +246,17 @@
         "negatives": 3,
         "positives": 1
       },
+      "publisher_change": {
+        "cases": 4,
+        "detected": 1,
+        "detection_rate": 1.0,
+        "exact": 4,
+        "exact_rate": 1.0,
+        "false_positive_rate": 0.0,
+        "false_positives": 0,
+        "negatives": 3,
+        "positives": 1
+      },
       "registry_existence": {
         "cases": 6,
         "detected": 3,
@@ -241,6 +278,28 @@
         "false_positives": 0,
         "negatives": 4,
         "positives": 2
+      },
+      "repository_moved": {
+        "cases": 3,
+        "detected": 1,
+        "detection_rate": 1.0,
+        "exact": 3,
+        "exact_rate": 1.0,
+        "false_positive_rate": 0.0,
+        "false_positives": 0,
+        "negatives": 2,
+        "positives": 1
+      },
+      "young_popular_repository": {
+        "cases": 4,
+        "detected": 1,
+        "detection_rate": 1.0,
+        "exact": 4,
+        "exact_rate": 1.0,
+        "false_positive_rate": 0.0,
+        "false_positives": 0,
+        "negatives": 3,
+        "positives": 1
       }
     },
     "rows": [
@@ -496,6 +555,94 @@
         "case": "ml-5",
         "category": "malicious",
         "check": "malicious",
+        "expected": "MISSING_EVIDENCE",
+        "label": "negative",
+        "observed": "MISSING_EVIDENCE"
+      },
+      {
+        "case": "rp-1",
+        "category": "reputation",
+        "check": "publisher_change",
+        "expected": "VERIFIED_RELATIONSHIP",
+        "label": "negative",
+        "observed": "VERIFIED_RELATIONSHIP"
+      },
+      {
+        "case": "rp-1",
+        "category": "reputation",
+        "check": "repository_moved",
+        "expected": "VERIFIED_RELATIONSHIP",
+        "label": "negative",
+        "observed": "VERIFIED_RELATIONSHIP"
+      },
+      {
+        "case": "rp-1",
+        "category": "reputation",
+        "check": "young_popular_repository",
+        "expected": "MISSING_EVIDENCE",
+        "label": "negative",
+        "observed": "MISSING_EVIDENCE"
+      },
+      {
+        "case": "rp-2",
+        "category": "reputation",
+        "check": "publisher_change",
+        "expected": "SUSPICIOUS_INCONCLUSIVE",
+        "label": "positive",
+        "observed": "SUSPICIOUS_INCONCLUSIVE"
+      },
+      {
+        "case": "rp-3",
+        "category": "reputation",
+        "check": "publisher_change",
+        "expected": "MISSING_EVIDENCE",
+        "label": "negative",
+        "observed": "MISSING_EVIDENCE"
+      },
+      {
+        "case": "rp-3b",
+        "category": "reputation",
+        "check": "publisher_change",
+        "expected": "MISSING_EVIDENCE",
+        "label": "negative",
+        "observed": "MISSING_EVIDENCE"
+      },
+      {
+        "case": "rp-4",
+        "category": "reputation",
+        "check": "repository_moved",
+        "expected": "SUSPICIOUS_INCONCLUSIVE",
+        "label": "positive",
+        "observed": "SUSPICIOUS_INCONCLUSIVE"
+      },
+      {
+        "case": "rp-4",
+        "category": "reputation",
+        "check": "young_popular_repository",
+        "expected": "MISSING_EVIDENCE",
+        "label": "negative",
+        "observed": "MISSING_EVIDENCE"
+      },
+      {
+        "case": "rp-5",
+        "category": "reputation",
+        "check": "repository_moved",
+        "expected": "VERIFIED_RELATIONSHIP",
+        "label": "negative",
+        "observed": "VERIFIED_RELATIONSHIP"
+      },
+      {
+        "case": "rp-5",
+        "category": "reputation",
+        "check": "young_popular_repository",
+        "expected": "SUSPICIOUS_INCONCLUSIVE",
+        "label": "positive",
+        "observed": "SUSPICIOUS_INCONCLUSIVE"
+      },
+      {
+        "case": "rp-6",
+        "category": "reputation",
+        "check": "young_popular_repository",
         "expected": "MISSING_EVIDENCE",
         "label": "negative",
         "observed": "MISSING_EVIDENCE"

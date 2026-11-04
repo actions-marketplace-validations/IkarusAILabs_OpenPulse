@@ -19,15 +19,18 @@ These are the false-positive measurements that the owner accepted (decision 11, 
 | `lookalike` | 7 | 4/4 (100.0%) | 0/3 (0.0%) | 100.0% |
 | `malicious` | 5 | 2/2 (100.0%) | 0/3 (0.0%) | 100.0% |
 | `provenance` | 4 | 1/1 (100.0%) | 0/3 (0.0%) | 100.0% |
+| `publisher_change` | 4 | 1/1 (100.0%) | 0/3 (0.0%) | 100.0% |
 | `registry_existence` | 6 | 3/3 (100.0%) | 0/3 (0.0%) | 100.0% |
 | `repository_linkage` | 6 | 2/2 (100.0%) | 0/4 (0.0%) | 100.0% |
+| `repository_moved` | 3 | 1/1 (100.0%) | 0/2 (0.0%) | 100.0% |
+| `young_popular_repository` | 4 | 1/1 (100.0%) | 0/3 (0.0%) | 100.0% |
 
 ## Degraded sources
 
 | Mode | Live records | Claims without evidence | Cases fully unresolved |
 |---|---:|---:|---:|
-| unreachable | 144 | 0 | 28/28 |
-| budget spent | 140 | 0 | 28/28 |
+| unreachable | 284 | 0 | 35/35 |
+| budget spent | 280 | 0 | 35/35 |
 
 ## Untrusted text
 
@@ -40,7 +43,7 @@ Leave-one-out: each sampled reference name is checked against all the others.
 
 | Ecosystem | Reference names | Sampled | Flagged | False-positive rate | Without `scope` | Names flagged per rule | ms per name |
 |---|---:|---:|---:|---:|---:|---|---:|
-| npm | 17336 | 1000 | 188 | 18.8% | 9.7% | edit_distance 90, scope 102, separator 7 | 46.4 |
+| npm | 17336 | 1000 | 188 | 18.8% | 9.7% | edit_distance 90, scope 102, separator 7 | 47.8 |
 | PyPI | 19 | 19 | 0 | 0.0% | 0.0% | none | 0.0 |
 
 **Finding.** The `scope` rule (npm `@x/name` where `name` is a reference) fires on legitimate scoped packages such as `@types/<name>` and a project's own scope, so it carries most of the organic false positives. The rate without it is the one to use for the other three rules.
@@ -86,6 +89,26 @@ The production `publisher_change` rules on every recorded release, each compared
 
 **Findings.** `new_account` carries the npm false positives: projects with several maintainers publish from different accounts, so it is an indicator to scope, not a gate. Switches to npm trusted publishing are not flagged (one shared service account publishes for every project), which is why the rule excludes them. On PyPI, `publisher_changed` fired on: repository 1, workflow 1 (changed fields; a renamed workflow in the same repository and a repository transfer both occur legitimately). Rules that fired on no organic release: `trusted_publishing_dropped`.
 
+## Organic control: repository moved (v0.16.0 Q3)
+
+The production `repository_moved` classification on every claimed GitHub repository in the organic set. Every package is legitimate, so every move flagged is a false positive.
+
+| Repositories | Answered | Flagged (moved) | False-positive rate | Moves | Statuses |
+|---:|---:|---:|---:|---|---|
+| 125 | 123 | 5 | 4.1% | transferred 5 | MISSING_EVIDENCE 2, SUSPICIOUS_INCONCLUSIVE 5, VERIFIED_RELATIONSHIP 118 |
+
+**Findings.** Every move in the set is a project transferred to an organisation, an ordinary event, so `repository_moved` is an indicator to scope, not a gate. 4 claims recorded on 2026-11-02 were GitHub pages (`sponsors/<user>` Funding links), not repositories; the parser now rejects them, and they are excluded here.
+
+## Organic control: young popular repository (v0.16.0 Q4)
+
+The production `young_popular_repository` rule (younger than 180 days, at least 1000 stars) on every claimed GitHub repository in the organic set, aged at the recording time. Every package is legitimate, so every repository flagged is a false positive.
+
+| Repositories | Younger than the age threshold | Flagged | False-positive rate | Flagged repositories |
+|---:|---:|---:|---:|---|
+| 123 | 1 | 1 | 0.8% | `pydantic/httpx2` |
+
+**Findings.** The set is drawn from established packages, so it holds 1 repository younger than the age threshold, and the rule flagged it: a legitimate project that launched to many stars. That is too few young repositories to measure a firing rate on the population the rule targets, so `young_popular_repository` ships experimental: an indicator to scope, never a gate, until a set of young legitimate repositories measures it.
+
 ## What a policy can prohibit, and how well it is measured
 
 | Condition | Check and status | Synthetic false positives | Organic false positives | Label |
@@ -98,7 +121,10 @@ The production `publisher_change` rules on every recorded release, each compared
 | `lookalike_name` | `lookalike` SUSPICIOUS_INCONCLUSIVE | 0/3 | 18.8% (npm) | measured; indicator |
 | `public_private_name` | `dependency_confusion` SUSPICIOUS_INCONCLUSIVE | 0/2 | no organic set | experimental |
 | `unconfirmed_repository` | `repository_linkage` SUSPICIOUS_INCONCLUSIVE | 0/4 | no organic set | experimental |
+| `publisher_change` | `publisher_change` SUSPICIOUS_INCONCLUSIVE | 0/3 | 4.6% (npm releases), 0.7% (PyPI releases) | measured; indicator |
+| `repository_moved` | `repository_moved` SUSPICIOUS_INCONCLUSIVE | 0/2 | 4.1% (repositories) | measured; indicator |
+| `young_popular_repository` | `young_popular_repository` SUSPICIOUS_INCONCLUSIVE | 0/3 | 1/123 (1 young repository in the set) | experimental |
 
-**Labels.** *Measured*: a failed check or a cited record, with no false positive on the synthetic negatives; a policy may prohibit it. *Measured; indicator*: it fires on real legitimate names at the organic rate shown, so prohibit it only for a named scope. *Experimental*: no organic false-positive set exists yet; a policy that prohibits it is told so.
+**Labels.** *Measured*: a failed check or a cited record, with no false positive on the synthetic negatives; a policy may prohibit it. *Measured; indicator*: it fires on real legitimate names at the organic rate shown, so prohibit it only for a named scope. *Experimental*: no organic false-positive set exists yet, or the set holds too few cases to measure a rate; a policy that prohibits it is told so.
 
 **Caveat for `not_found_in_registry`.** It also fires for an internal package served by a private index when that name is not on the private-name list (`.openpulse/private-packages.txt`): list internal names before prohibiting it.

@@ -6,6 +6,9 @@ Status words: DONE, ACTIVE, NEXT, LATER, BLOCKED (waiting on a decision).
 
 ## Where we are (verified against `main` @ `a461bc9`, 2026-10-28)
 
+- **Update 2026-11-03 (track T research):** the owner asked an AI assistant to take on the star-history indicators and track T's study. Started as "Track T research" below: TR1 (star-history recorder) and TR2 (draft protocol) are done. GitHub's stargazer listings and GraphQL `starredAt` are closed to third parties (verified 2026-11-03), so star history comes from the counts-only star-history endpoint. Labels come from StarScout and OSV, never from an AI. Decisions 17 and 18 are new. R-C stays with an independent team.
+- **Update 2026-11-03 (v0.17 plan, owner-approved):** the owner asked to plan and start the next versions (2026-11-03). Decisions 13, 14 and 16 are approved, so v0.17.0 "Gate-to-Install Integrity" (Phase 11) is ACTIVE and v0.18.0 and v0.19.0 follow in that order. Build order for v0.17: G1 receipts, G3 digests in the gate, G2 verification, G4 generated files, G5 end-to-end install tests, G6 docs. Decision 15's scope is approved; whether `--fail-on` fails on PARTIAL coverage by default stays open until S4 is built. Writing G1's tests found a gate crash on `main` since v0.15.0 (a private-name list passed as loaded names where a path was expected), fixed separately as a v0.16.1 candidate.
+- **Update 2026-11-03 (v0.16 released):** v0.16.0 "Reputation Evidence" is released (Phase 10, Q1–Q6: #301–#307, #311). T-C's indicators that need no star history ship measured, or experimental where the organic set could not measure them (`young_popular_repository`), and none is a verdict. Q6's adversarial cases found and fixed one over-strong status (npm trusted publishing read as publisher continuity). Also in the release: the security review fixes (#306) and Phase 12's S1 defect fix (#310). Next: decisions 13–16 (v0.17–v0.19 scopes).
 - **Update 2026-11-02 (v0.16 plan, owner-approved):** v0.16.0 "Reputation Evidence" is Phase 10 below: track T Phase 2's T-C, the transparent reputation indicators that need no star history (a publisher change, a moved repository, a young repository claiming popularity), each measured on recorded organic projects before it ships. It needs evidence contract 2.3.0 for the new check names. Approved by the owner 2026-11-02 (decision 12).
 - **Update 2026-11-02 (v0.15 released):** v0.15.0 "Pre-Install Gates" is released (Phase 9, Z1–Z4: #295–#298). T-E2's exit is met: the policy that fails CI also fails a commit and a pre-install CI step, with no model involved, and the pre-install bypass routes are tested and documented. Track T Phase 4 (T-E1, T-E2) is complete. Still open: the PyPI popular-name list (decision 9). Next in track T: Phase 2's T-C reputation indicators (need labelled data).
 - **Update 2026-11-02 (v0.15 plan):** v0.15.0 "Pre-Install Gates" is Phase 9 below: track T Phase 4's T-E2, the trust policy enforced where dependencies enter (a pre-commit hook on dependency files, and a CI step before `pip install` or `npm ci`), through one new `openpulse gate` command. Started on the owner's "continue building next steps" (2026-11-02); scope open to change.
@@ -296,7 +299,7 @@ Goal: T-E2 from `docs/ROADMAP.md`: the T-E1 trust policy enforced at the existin
 
 **Not in v0.15.0:** a registry proxy or firewall (out of scope by design); T-C reputation indicators (need labelled data); the PyPI popular-name list (decision 9).
 
-## Phase 10 — v0.16.0 "Reputation Evidence" (track T Phase 2, T-C; approved 2026-11-02)
+## Phase 10 — v0.16.0 "Reputation Evidence" (track T Phase 2, T-C; approved 2026-11-02) — DONE, released 2026-11-03
 
 Goal: T-C from `docs/ROADMAP.md`, limited to the indicators that need no star history. Each indicator has a written rule, its inputs and its source. Indicators are reported one by one and never summed into a score. None is a verdict or changes one, and the absence of an indicator is never evidence of authenticity. Each ships with a firing rate measured on recorded organic projects, or is labelled experimental. Builds on T-B1 provenance, T-A4 repository linkage and the v0.14 measurement harness (`benchmarks/trust.py`).
 
@@ -307,11 +310,75 @@ Goal: T-C from `docs/ROADMAP.md`, limited to the indicators that need no star hi
 | Q3 | `repository_moved`: the claimed repository answers under another name (a GitHub transfer or rename redirect). `SUSPICIOUS_INCONCLUSIVE`, naming the old and new names. Reuses the linkage check and the collector's redirect handling | T-C | S | Q1 |
 | Q4 | `young_popular_repository` (threat T5): a repository younger than a set age with a star count above a set threshold. Experimental unless Q1 measures it; star counts are inputs, never trust evidence | T-C | S | Q1 |
 | Q5 | Wiring: the `trust` block, evidence contract 2.3.0 (additive: the three check names; 2.2 published unchanged beside it), trust-policy conditions (scoped indicators that must name packages; experimental where Q1 measured no organic rate), SARIF and DefectDojo, MCP docs | T-D, T-F2, T-E1 | M | Q2–Q4 |
-| Q6 | Echo and degraded-run tests: hostile publisher and repository names are never echoed (T-F3); an unreachable source is `NOT_PERFORMED`; the measurements document is regenerated | T-C | S | Q5 |
+| Q6 | Echo and degraded-run tests: hostile publisher and repository names are never echoed (T-F3); an unreachable source is `NOT_PERFORMED`; adversarial identity cases (a claimed repository that is a GitHub page, a claim of someone else's popular repository, a transfer to an unrelated owner, a publisher change hidden behind a trusted-publishing switch) each get the status their rule defines and no stronger; the measurements document is regenerated | T-C | S | Q5 |
 
 **Exit:** each indicator is documented with its rule, inputs, source and a measured organic firing rate (or an experimental label). None changes a verdict, and prohibiting one requires named packages. Track T Phase 2's exit ("each indicator is documented, with a measured false-positive rate on the organic fixture set") is met for these three.
 
+**Acceptance, restated (advisory review 2026-11-02):** each indicator has an explicit meaning and source (its module docstring, `docs/MCP.md` and `docs/EVIDENCE_CONTRACT.md` 2.3.0); none reaches a status stronger than `SUSPICIOUS_INCONCLUSIVE` or establishes trust (`young_popular_repository` never verifies anything); organic false-positive rates are measured (Q1–Q4); verdict semantics are unchanged (trust checks are never verdict inputs, tested).
+
 **Not in v0.16.0:** star-history bursts and stars inconsistent with downloads or dependents (GitHub's API budget makes them on-demand only, and they need labelled data; LATER); any statistical or ML detection (needs the evaluation plan's labelled data); a registry proxy; the PyPI popular-name list (decision 9).
+
+## Phase 11 — v0.17.0 "Gate-to-Install Integrity" (track T Phase 4, T-E2; approved 2026-11-03) — ACTIVE
+
+Goal: prove that what `openpulse gate` checked is what gets installed. Today the gate judges files as they are when it runs and records nothing about them. A file changed between the gate and the install step, or a lockfile regenerated after the gate, is installed unchecked: `docs/TRUST_POLICY.md` lists both routes as not covered. In-place lockfile hash edits are caught only when the policy prohibits `digest_mismatch`.
+
+| # | Item | Track T | Size | Depends on |
+|---|---|---|---|---|
+| G1 | **Gate receipt.** `openpulse gate --receipt PATH` writes what was gated: the SHA-256 of each input file, the policy and the private-name list, their paths, the base ref or base files, the OpenPulse version, the decision, and every violation and unchecked check. Fixed shape, documented, never upstream text (T-F3) | T-E2 | M | v0.16.0 |
+| G2 | **Verify before install.** `openpulse gate --verify-receipt PATH FILE...` re-hashes the files about to be installed and exits 1 if any differs from the receipt, is missing from it, or the receipt is not a passing one. The Action's `gate` input writes the receipt, and a documented step verifies it immediately before `pip install` / `npm ci`. Changed means reinspect: run the gate again | T-E2 | M | G1 |
+| G3 | **Lockfile digests always checked by the gate.** For every lockfile entry the change adds or whose locked digests changed, the gate compares the digests with the registry whatever the policy says, and a mismatch fails the gate (`digest_mismatch` becomes implied in `gate`; `check` and `attest` keep needing it in the policy). Needs decision 14 | T-B4, T-E2 | S | v0.16.0 |
+| G4 | **Generated dependency files.** A lockfile the build regenerates (`poetry lock`, `npm install`, `uv lock`) after the gate fails G2's verification. Document the generate-then-gate order, and add a `gate` mode for the CI step after generation (`--require-receipt-for` named files) so a regenerated file cannot reach install without passing the gate | T-E2 | S | G2 |
+| G5 | **Adversarial end-to-end CI tests.** In CI, offline, against a local hash-pinned wheel index: a clean change is gated and installs; a lockfile swapped after the gate is refused by G2; an in-place hash edit is refused by G3; a regenerated lockfile is refused until gated again; `pip install --require-hashes` installs exactly the gated digests. Both the accepted and the rejected installs are asserted | T-E2 | M | G1–G4 |
+| G6 | Docs: the bypass table in `docs/TRUST_POLICY.md` and `docs/GITHUB_ACTION.md` updated with what is now covered, and what still is not (an install from outside the gated files) | T-E2 | S | G5 |
+
+**Exit:** every install a gated pipeline performs is either of the exact bytes the gate passed, with the receipt to show it, or refused. The bypass routes "a file changed after the gate" and "a lockfile regenerated after the gate" move from "No" to "Yes" in `docs/TRUST_POLICY.md`.
+
+**Not in v0.17.0:** signing receipts (they are integrity records within one pipeline run; a signed, portable receipt waits for the contract signature work); intercepting installers (a pip or npm plugin); a registry proxy.
+
+## Phase 12 — v0.18.0 "Inspection Coverage Assurance" (M5/M6; approved 2026-11-03; the `--fail-on` default in decision 15 still open) — NEXT
+
+Goal: repository-wide coverage that never overstates itself. `--github-repo` reports COMPLETE, PARTIAL or FAILED, but discovery recognises only exact file names: a repository whose dependencies are in `requirements-dev.txt`, `yarn.lock`, `pnpm-lock.yaml`, `uv.lock`, `Pipfile.lock` or a bare `package.json` is not told about them, and can be reported COMPLETE. That breaks the standing rule "unknown stays unknown" (Rules for every phase), so S1 is a defect fix and can ship earlier as a patch.
+
+| # | Item | Layer | Size | Depends on |
+|---|---|---|---|---|
+| S1 | ✅ **No silent omissions (defect; fixed on `main`, unreleased).** A recognised dependency file OpenPulse cannot read (`yarn.lock`, `pnpm-lock.yaml`, `uv.lock`, `Pipfile`, `Pipfile.lock`, `package.json` without a lockfile, `bun.lockb`, `gradle.lockfile`, `environment.yml`, `setup.py`, `setup.cfg`) is listed with the reason "dependency file not supported", and makes coverage PARTIAL | M5 | S | — |
+| S2 | **Requirements variants read.** `requirements-*.txt`, `requirements/*.txt` and `constraints*.txt` go through the existing requirements parser, matching the pre-commit hook's pattern | M5 | S | S1 |
+| S3 | **Discovery scope recorded.** Coverage states what was searched: the ref and commit, the file-name patterns, the directories skipped (`node_modules`, `vendor`, ...) with counts, and the caps that applied. Additive in the evidence contract (a 2.4.0 minor) | M5 | M | S1 |
+| S4 | **No unjustified all-clear.** Every summary that can read as clear (`check`, `digest`, `warnings`, the job summary, SARIF, webhooks) states PARTIAL coverage and names the uninspected categories (unsupported files, capped files, truncated tree, fetch errors). Whether `--fail-on` should also fail on PARTIAL by default is decision 15 (today it needs `--fail-on-partial`) | M6 | M | S3 |
+| S5 | **Monorepos and nested workspaces.** Tests and fixes for npm/pnpm workspaces, Cargo workspaces, Poetry and uv projects in subdirectories, Go multi-module repositories and Maven multi-module builds: every member is found or listed as uninspected | M5 | M | S1, S2 |
+
+**Exit:** a repository's coverage is COMPLETE only when every dependency file in it was read; anything else is PARTIAL with each uninspected file and category named, and no output reads as all-clear over a PARTIAL run.
+
+## Phase 13 — v0.19.0 "Evidence Consumer and Portability" (M9 preparation, T-F2; approved 2026-11-03) — LATER
+
+Goal: show that an evidence contract means the same thing outside OpenPulse. `conformance/evidence-contract/verify.mjs` already recomputes the content hash with no OpenPulse code, but it accepts any `2.x` version string, does not validate the schema, and says nothing about the document's outcomes.
+
+| # | Item | Size | Depends on |
+|---|---|---|---|
+| P1 | **Standalone consumer.** `conformance/consumer/`: a small Python package with no OpenPulse imports (one pinned, hash-locked dependency: `jsonschema`), tested in CI from outside the checkout | M | — |
+| P2 | **Exact versions.** Accepts only versions with a published schema and validates against exactly that schema; rejects unknown versions (`2.9.0`), a `provenance.contract_version` that differs from the top level, and unknown fields where the schema is closed. `verify.mjs` rejects unknown versions too | S | P1 |
+| P3 | **Hash verification** for 1.x and 2.x documents, matching `verify.mjs` | S | P1 |
+| P4 | **Outcomes preserved.** The consumer's summary keeps NOT_AFFECTED, RELATED and UNKNOWN apart, keeps `inspection_coverage` and `trust_assurance` statuses (MISSING_EVIDENCE and NOT_PERFORMED included), and never folds a negative or incomplete outcome into "pass". Tested with documents built to tempt that mistake | S | P1 |
+| P5 | **Released-contract corpus.** `conformance/contracts/<version>/`: documents produced by each released contract version (2.0 from v0.9.0, 2.1 from v0.10.0, 2.2 from v0.13.0, 2.3 from v0.16.0, and the 1.x builder), regenerated by a script from the release tags, plus mutated negatives. CI runs the consumer over all of them | M | P1–P4 |
+
+**Exit:** a third party can validate, verify and read any released OpenPulse contract without OpenPulse, and gets the same outcomes OpenPulse reported, including every unknown.
+
+## Track T research — star-history indicators and the track T study (author-run, AI-assisted; started 2026-11-03) — ACTIVE
+
+Goal: the two track T items that needed data or a study, done by an AI assistant where that is sound (owner, 2026-11-03). Independence is not claimed: labels come from published third-party records, thresholds are frozen on organic data before any positive is read, and the protocol is registered by a named author before the run. R-C (track R's held-out evaluation) stays with an independent human team; AI only prepares it.
+
+| # | Item | Size | Depends on | Status |
+|---|---|---|---|---|
+| TR1 | **Star-history recorder.** `benchmarks/record_star_history.py`: weekly star counts from GitHub's star-history endpoint (the stargazer listings are closed to third parties since 2026), for the organic set (committed) and a fixed-seed sample of StarScout's flagged repositories (local only) | S | — | DONE (this change) |
+| TR2 | **Study protocol.** `docs/research/TRACK_T_STUDY_PROTOCOL.md`: questions, hypotheses, data, calibration and freezing, metrics, stopping rule, ethics. Part A (measurement) now; Part B (agents, enforcement) registered separately | S | — | DRAFT (this change) |
+| TR3 | **Young organic set.** A recorder for repositories of packages first published in the last 12 months, without malicious records, so false positives are measured where the indicators matter | S | TR1 | NEXT |
+| TR4 | **Calibration.** Split the organic set, compute SH1–SH3 thresholds on the calibration half, write them into the protocol | S | TR1, TR3 | after TR3 |
+| TR5 | **Registration** of Part A by the responsible author (decision 17), and the freeze tag | — | TR4 | owner |
+| TR6 | **The run:** positives, held-out organic, OSV-malicious packages; results in `docs/research/` with every bias of §4 reported | M | TR5 | after TR5 |
+| TR7 | **Ship or drop** each SH indicator from the measured rates: a `star_burst` trust check (experimental or indicator), or a recorded negative result | M | TR6 | after TR6 |
+| TR8 | **R-C package for an external team:** packets, codebook and a one-command run, so the independent evaluation costs a team as little as possible. No AI labels count as R-C labels | M | — | LATER |
+
+**Exit:** each star-history indicator is either shipped with rates measured under a registered protocol, or dropped with the negative result published; and the track T study's Part A results are published with their limits.
 
 ## Phase 4 — Release supply chain (alongside Phases 2–3)
 
@@ -333,6 +400,8 @@ These compete for reviewer time, not for the same files:
 - First external consumer of the evidence contract (M9 design only; builds on H10/#108).
 - M8: how coding agents actually use `openpulse mcp`. Record the questions agents ask and the verdicts they get (opt-in, local only) before designing further tools.
 
+**R-C runs in parallel with every product phase, and is the critical dependency for any empirical claim** (advisory review 2026-11-02, agreeing with `docs/ROADMAP.md` R-C). No document claims that OpenPulse is more accurate than an alternative until the independent evaluation is complete. The external team, the archived protocol, held-out cases, independent labels and the baseline comparison come before adding more internally curated examples: a larger internal set does not substitute for any of them.
+
 ## Decisions needed from the owner
 
 | # | Decision | Blocks |
@@ -349,6 +418,12 @@ These compete for reviewer time, not for the same files:
 | 10 | v0.13.0 scope, including the additive evidence contract 2.2.0 (`trust_assurance`) — **decided 2026-11-02: approved** | X1–X6 |
 | 11 | v0.14.0 scope, and that Y1's synthetic and organic false-positive measurements meet track T Phase 4's "false-positive results" dependency for T-E1 (the registered study still to come) — **decided 2026-11-02: approved** | Y1–Y6 |
 | 12 | v0.16.0 scope (Phase 10), including the additive evidence contract 2.3.0 for the three new check names — **decided 2026-11-02: approved** | Q1–Q6 |
+| 13 | v0.17.0 scope (Phase 11): gate receipts and verification before install — **decided 2026-11-03: approved** | G1–G6 |
+| 14 | `openpulse gate` checks changed lockfile digests whatever the policy says (G3), so a hash edit cannot pass a policy that forgot `digest_mismatch` — **decided 2026-11-03: approved** | G3 |
+| 15 | v0.18.0 scope (Phase 12), including evidence contract 2.4.0 for the recorded discovery scope, and whether `--fail-on` fails on PARTIAL coverage by default (a gate-semantics change) — **scope approved 2026-11-03**; the `--fail-on` default stays open until S4. S1 shipped in v0.16.0 | S1–S5 |
+| 16 | v0.19.0 scope (Phase 13), including the consumer's one runtime dependency (`jsonschema`) — **decided 2026-11-03: approved** | P1–P5 |
+| 17 | Approve the track T study protocol (Part A) and register it under your name on OSF or Zenodo before the held-out data is read; an AI cannot be the accountable author — open | TR5 |
+| 18 | Use StarScout's flagged-repository lists as fake-star labels, kept local (git-ignored) and published only as aggregates, as its authors ask — open | TR1's positives, TR6 |
 
 ## Risks
 

@@ -6,6 +6,40 @@ All notable changes to OpenPulse. Versions follow semver; while the project is `
 
 ### Added
 
+- **Gate receipts (v0.17.0 item G1).** `openpulse gate --receipt PATH` writes what the gate judged, whatever the outcome:
+  - the SHA-256 of every named file (with its status: gated, unreadable or missing), of the policy and of the private-name list;
+  - the base it compared with, the OpenPulse version, and the decision with its exit code;
+  - every violation and unchecked check, as condition, check, status and dependency label, never a statement.
+
+  Each file is hashed before and after it is read; a file that changed in between fails the gate (exit 2). A receipt is an integrity record within one pipeline run, not a signature. See "Gate receipts" in [`docs/TRUST_POLICY.md`](docs/TRUST_POLICY.md). Verifying it before install is item G2.
+
+## 0.16.1 — 2026-11-03
+
+A patch for one crash. Nothing else changes; no upgrade notes.
+
+### Fixed
+
+- **`openpulse gate` no longer crashes when a private-name list is in use.** Since v0.15.0 the gate loaded `.openpulse/private-packages.txt` (or `--private-names`) and then passed the loaded names where a file path was expected, so any gate whose policy needs trust checks died with a `TypeError` (exit 1) instead of gating. The GitHub Action passes the base branch's list whenever it has one, so every Action gate in such a repository failed this way. `attest` now also tells the policy which dependencies are private, so they are no longer counted as unchecked. Regression tests in `tests/test_gate_command.py`.
+
+## 0.16.0 "Reputation Evidence" — 2026-11-03
+
+Track T Phase 2 (T-C): three reputation indicators, each measured on a recorded set of real, legitimate packages before it shipped, and each reported on its own, never summed and never a verdict.
+- **`publisher_change`:** a release published by an npm account, or a PyPI provenance publisher, that the earlier releases did not use, or without the trusted publishing or attestations they had.
+- **`repository_moved`:** the claimed repository answers on GitHub under another name (renamed or transferred).
+- **`young_popular_repository`:** a repository younger than 180 days with at least 1000 stars (experimental: too few young repositories to measure a rate).
+- **Where they appear:** the `trust` block, evidence contract 2.3.0 (additive; 2.2 unchanged beside it), the trust policy (scoped to named packages), SARIF and DefectDojo.
+
+The release also closes a security review: the gate fails closed, history committed to the repository is refused, and `--github-repo` no longer reports COMPLETE coverage after skipping files it cannot read. Verdicts and the frozen evaluation are unchanged. **Upgrade notes** below cover the stricter gate, refused tracked state and contract 2.3.0.
+
+### Upgrade notes
+
+- **`openpulse gate` fails closed.** A named file it cannot read exits 2 (it was skipped with exit 0). A check your policy prohibits that could not run (a source down, a spent lookup budget) fails the gate as `PROHIBITED unchecked <condition>`. To keep the old behaviour for unreachable sources, set `unchecked: pass` in `.openpulse/policy.yml`. Nothing changes without a policy except unreadable files.
+- **Tracked local history is refused.** `check`, `digest`, `warnings`, `report`, `observe` and `sweep` exit 2 when git tracks the observation store, the detection ledger or the webhook delivery state. Untrack the file, or point `--store`, `--ledger` or `--delivery-state` outside the repository.
+- **`openpulse attest` emits evidence contract 2.3.0.** A consumer that accepts exactly 2.2.0 rejects it; validate against `schemas/evidence-contract/v2.3/schema.json`. Documents without the three new check names are otherwise identical to 2.2.
+- **`--github-repo` may now read PARTIAL where it read COMPLETE.** Dependency files OpenPulse cannot read (`yarn.lock`, `uv.lock`, `requirements-dev.txt`, ...) are listed as not inspected. `check --fail-on-partial` therefore fails on such a repository; `--fail-on` and `--strict` still fail only on FAILED coverage.
+
+### Added
+
 - **The organic reputation set, measured first (track T Phase 2, T-C; v0.16.0 item Q1).** The reputation indicators (publisher change, moved repository, young repository claiming popularity) are measured on real, legitimate packages before they ship.
   - **Recorder:** `benchmarks/record_reputation.py` records 60 npm packages (a fixed-stride sample of the pinned high-impact list) and 80 PyPI packages (the curated catalog and OpenPulse's own locked dependencies), each with its latest 10 releases and its GitHub repository, into `benchmarks/fixtures/reputation/organic-<date>.json`.
   - **What is stored:** who published each release (npm accounts only as hashes; the trusted-publishing provider; PyPI's provenance publisher), whether it carries attestations, and the repository's answered name, age, stars and flags. Every upstream string is validated first; no account name or e-mail is stored.
@@ -16,7 +50,37 @@ All notable changes to OpenPulse. Versions follow semver; while the project is `
   - **PyPI `publisher_changed`:** the provenance names another publisher than the latest earlier attested release's (within 3 releases); the record says which fields changed.
   - **PyPI `attestations_stopped`:** no provenance, after a release that had it.
   - **Measured on the organic set:** `new_account` flags 4.6% of legitimate npm releases (projects with several maintainers), `publisher_changed` 0.3% and `attestations_stopped` 0.4% of PyPI releases, `trusted_publishing_dropped` none. Same publisher as before is `VERIFIED_RELATIONSHIP` (continuity, not evidence of a benign release). npm accounts are compared as hashes, never named.
-  - Not yet in the `trust` block or a policy: that is item Q5.
+- **`repository_moved`: does the claimed repository answer under another name? (v0.16.0 item Q3).** `core/repository_moved.py` asks GitHub for the repository a package claims, following one redirect within `api.github.com` only.
+  - **Another name:** `SUSPICIOUS_INCONCLUSIVE`, naming both and whether it was `renamed` (same owner) or `transferred`. **Same name** (case ignored): `VERIFIED_RELATIONSHIP`, meaning only that the claim is current. No claim, or GitHub does not know the repository: `MISSING_EVIDENCE`.
+  - **Measured on the organic set:** 5 of 123 legitimate repositories (4.1%) were moved, all transferred to an organisation, so this is an indicator to scope, not a gate.
+- **`young_popular_repository`: many stars on a young repository? (threat T5; v0.16.0 item Q4).** `core/young_popular_repository.py` reads the creation date and star count of the repository a package claims (the same GitHub request as `repository_moved`).
+  - **Younger than 180 days with at least 1000 stars:** `SUSPICIOUS_INCONCLUSIVE`, with the age, the count and both thresholds. Anything else is `MISSING_EVIDENCE`: stars are inputs, never trust evidence, so no star count verifies anything.
+  - **Experimental:** the organic set holds one repository younger than 180 days, a legitimate project the rule flags (1 of 123, 0.8%). That is too few young repositories to measure a firing rate, so the indicator ships experimental.
+
+- **The reputation indicators in the trust results, evidence contract 2.3.0 and the trust policy (v0.16.0 item Q5).**
+  - **Trust block:** `dependency_status`, `check_dependency_file` and `openpulse trust` report `publisher_change`, `repository_moved` and `young_popular_repository` beside the existing checks, for PyPI and npm packages. A package on the private-name list gets `NOT_PERFORMED` for all three. Each spends one lookup from the session budget; `repository_moved` and `young_popular_repository` share one GitHub request. `attest --trust` allows 7 lookups per dependency (was 4).
+  - **Evidence contract 2.3.0:** additive. `trust_assurance` may name the three new checks; nothing else changes, and the 2.2 schema is published unchanged beside it. `openpulse attest` emits 2.3.0. See [`docs/EVIDENCE_CONTRACT.md`](docs/EVIDENCE_CONTRACT.md).
+  - **Trust policy:** three new conditions, each requiring `packages`: `publisher_change` and `repository_moved` (indicators, with the organic rates measured), and `young_popular_repository` (experimental: a policy that uses it gets a warning). See [`docs/TRUST_POLICY.md`](docs/TRUST_POLICY.md).
+  - **SARIF and DefectDojo:** the indicators appear as `openpulse/trust/<check>` notes, or errors where the policy prohibits them, like the other trust checks.
+  - **Measurements:** synthetic cases for the three checks (no false positive on the negatives) and the degraded runs (no claim without evidence when sources are down or the budget is spent).
+
+### Fixed
+
+- **`publisher_change` no longer reads npm trusted publishing as continuity (v0.16.0 item Q6).** A release published through trusted publishing carries npm's one shared service account, so matching an earlier trusted release's account was reported `VERIFIED_RELATIONSHIP` even when the trusted-publishing configuration had moved to another repository (npm's metadata names no repository or workflow to compare). Such a release is now `MISSING_EVIDENCE` ("trusted_publishing"). Dropping back from trusted publishing to a token still fires `trusted_publishing_dropped`. New synthetic case rp-3b.
+- **End-to-end echo, degraded-run and adversarial identity tests for the reputation indicators (v0.16.0 item Q6).** `tests/test_reputation_adversarial.py` runs the indicators through the trust block, contract 2.3.0, SARIF, the summary and DefectDojo:
+  - hostile repository names, publisher accounts, provider ids and repository metadata reach no output;
+  - GitHub or registry trouble is `NOT_PERFORMED`, and a prohibited indicator that did not run is reported unchecked;
+  - a claimed GitHub page (`sponsors`, `orgs`, `marketplace`, `*.github.io`, gists) is no repository and GitHub is never asked about it;
+  - a claim of someone else's popular repository verifies only that the claim is current: stars are no indicator, and `repository_linkage` flags the name mismatch;
+  - a transfer to an unrelated owner is an indicator, never a verdict.
+- **`--github-repo` no longer drops dependency files it cannot read (track T Phase 12, S1).** Discovery recognised exact file names only, so a repository whose dependencies live in `yarn.lock`, `pnpm-lock.yaml`, `uv.lock`, `Pipfile`, `Pipfile.lock`, `bun.lock`/`bun.lockb`, `gradle.lockfile`, `environment.yml`, `setup.py`, `setup.cfg`, a requirements variant (`requirements-dev.txt`, `requirements/*.txt`, `constraints*.txt`) or a `package.json` with no `package-lock.json` beside it was inspected with no skip reason and could read **COMPLETE**. Each such file is now listed as "dependency file not supported; its dependencies were not inspected" and coverage is **PARTIAL**. Nothing new is parsed; files under `node_modules`, `vendor` and hidden directories stay out of scope as before.
+- **`openpulse gate` fails closed (security review P1-1, P1-2).**
+  - **A file it cannot read** (a malformed `package-lock.json`, a broken `pyproject.toml`, any named file that is not a dependency file) now exits 2. It used to be skipped with exit 0, so a file pip or npm would still consume could pass the gate unchecked.
+  - **A prohibited check that did not run** (a source unreachable or rate-limited, a spent lookup budget) now fails the gate as `PROHIBITED unchecked <condition>`. It used to pass, so an OSV outage or a change with many dependencies switched off `confirmed_malicious`. Checks that do not apply (npm has no PyPI provenance, private names skip the public checks) never count. The policy key `unchecked: pass` restores the old behaviour; `check` and `attest` print the count and do not fail on it.
+  - **Entries it does not check are listed:** lines that are not exactly pinned packages (`flask>=2`, a requirements file of bare names) are printed as not checked instead of being skipped silently.
+- **Local history committed to the repository is refused (security review P1-3).** `check`, `digest`, `warnings`, `report`, `observe` and `sweep` exit 2 when git tracks the observation store, the detection ledger or the webhook delivery state: state from the repository could move lead-time claims or mark alerts as already delivered. Untrack it, or point `--store`, `--ledger` or `--delivery-state` elsewhere.
+- **`SECURITY.md` and the roadmap describe the current product (security review P1-4).** `SECURITY.md` no longer says there are no package-trust checks or that 0.11.x is the supported release; the track T roadmap section is marked active with what each release implemented.
+- **GitHub pages are no longer read as repositories.** A project URL such as `https://github.com/sponsors/<user>` (a Funding link) was parsed as the repository `sponsors/<user>`; GitHub's reserved paths (`sponsors`, `orgs`, `marketplace` and others) are now rejected. This affects `repository_linkage`, which could look up such a page as the claimed repository, and the reputation recorder, which now ranks claims like the checks do.
 
 ## 0.15.0 "Pre-Install Gates" — 2026-11-02
 

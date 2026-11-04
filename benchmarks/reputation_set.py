@@ -193,3 +193,81 @@ def publisher_change(doc: dict[str, Any] | None = None) -> dict[str, Any]:
             "latest_release_rate": _ratio(latest, latest_compared),
         }
     return out
+
+
+def repository_moved(doc: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The production ``repository_moved`` classification (v0.16.0 Q3) on every
+    recorded repository. Every package is legitimate, so every move flagged is a
+    false positive. Claims the current parser rejects (GitHub pages such as
+    ``sponsors/<user>``, which the 2026-11-02 recording still took from Funding
+    links) are excluded and counted.
+    """
+    from core import repository_moved as rm
+    from core.repository_linkage import github_repository
+
+    doc = doc or load()
+    statuses: dict[str, int] = {}
+    moves: dict[str, int] = {}
+    excluded = 0
+    for claimed, repo in sorted(doc["repositories"].items()):
+        if github_repository(claimed) is None:
+            excluded += 1
+            continue
+        if repo.get("status") == 404:
+            status = "MISSING_EVIDENCE"
+        elif repo.get("status") == 200 and repo.get("full_name"):
+            status, move = rm.classify(claimed, repo["full_name"])
+            if move:
+                moves[move] = moves.get(move, 0) + 1
+        else:
+            status = "NOT_PERFORMED"
+        statuses[status] = statuses.get(status, 0) + 1
+    answered = statuses.get("SUSPICIOUS_INCONCLUSIVE", 0) + statuses.get(
+        "VERIFIED_RELATIONSHIP", 0
+    )
+    flagged = statuses.get("SUSPICIOUS_INCONCLUSIVE", 0)
+    return {
+        "repositories": len(doc["repositories"]) - excluded,
+        "excluded_not_repositories": excluded,
+        "statuses": dict(sorted(statuses.items())),
+        "answered": answered,
+        "flagged": flagged,
+        "false_positive_rate": _ratio(flagged, answered),
+        "moves": dict(sorted(moves.items())),
+    }
+
+
+def young_popular_repository(doc: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The production ``young_popular_repository`` rule (v0.16.0 Q4) on every
+    recorded repository, aged at the recording time. Every package is
+    legitimate, so every repository flagged is a false positive. The rate is
+    only as informative as the number of young repositories in the set, which
+    is reported beside it.
+    """
+    from core import young_popular_repository as yp
+    from core.repository_linkage import github_repository
+
+    doc = doc or load()
+    now = _when(doc["recorded_at"])
+    judged = young = flagged = 0
+    fired: list[str] = []
+    for claimed, repo in sorted(doc["repositories"].items()):
+        if github_repository(claimed) is None or repo.get("status") != 200:
+            continue
+        if not repo.get("created") or not isinstance(repo.get("stars"), int):
+            continue
+        judged += 1
+        age = max(0, (now - _when(repo["created"])).days)
+        young += age < yp.MAX_AGE_DAYS
+        if yp.fires(age, repo["stars"]):
+            flagged += 1
+            fired.append(repo.get("full_name") or claimed)
+    return {
+        "max_age_days": yp.MAX_AGE_DAYS,
+        "min_stars": yp.MIN_STARS,
+        "repositories": judged,
+        "younger_than_max_age": young,
+        "flagged": flagged,
+        "false_positive_rate": _ratio(flagged, judged),
+        "flagged_repositories": fired,
+    }
