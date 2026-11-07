@@ -430,6 +430,50 @@ holds inside a file: a manifest that declares dependencies but yields
 none must refuse or record skips, never return a silent empty set
 (the namespaced pom.xml regression, #112).
 
+Files OpenPulse recognises but cannot read (`yarn.lock`, `pnpm-lock.yaml`,
+`uv.lock`, `Pipfile.lock`, a `package.json` without its lockfile, ...)
+are listed as not inspected, so coverage is PARTIAL (v0.16.0 S1).
+Requirements variants (`requirements-*.txt`, `requirements_*.txt`,
+`constraints*.txt`, any `.txt` in a `requirements/` directory) are read
+with the requirements parser (v0.18.0 S2). A `-r` or `-c` include pulls
+in lines from another file: coverage stays COMPLETE only when that file
+is itself in the repository and was inspected. An include of a URL, an
+absolute path, a path outside the repository or a file that was not
+inspected makes coverage PARTIAL and names it. A constraints file is read
+as pins: it decides the version of whatever installs those packages.
+
+Every inspection also states what it searched (v0.18.0 S3): the ref and
+commit, the file patterns read, the recognised names not read, the
+directories skipped with how many files each held, the limits and which
+applied, and how many dependency files were found and read. `check` and
+`attest` print it as one line, and evidence contract 2.4.0 carries it as
+`inspection_coverage.scope`. COMPLETE means complete over that search.
+
+No summary reads as an all-clear over PARTIAL or FAILED coverage
+(v0.18.0 S4). Every one that could (`check`, `digest`, `warnings`, the
+webhook body, the SARIF notification and the job summary) names what was
+not inspected by category, with counts, before the details: unsupported
+dependency files, requirements includes not inspected, files over the
+size limit, the repository size cap, the file-count cap, a truncated
+tree, unsafe paths, and files that could not be fetched or parsed. The
+SARIF run carries them as `inspection_coverage_categories`. `check`'s
+closing count says when it is over PARTIAL or FAILED coverage. Whether
+`--fail-on` should also fail on PARTIAL by default is open (decision 15);
+today that needs `--fail-on-partial`.
+
+Monorepos (v0.18.0 S5): every member is found and read, or listed as not
+inspected. `packages/`, the conventional monorepo directory, is searched;
+only NuGet's restore folder under it (`packages/<Id>.<version>/`) is
+skipped. An npm workspace member's `package.json` is covered by the
+`package-lock.json` of the workspace that lists it; a `package.json` no
+read lockfile lists is not inspected. pnpm workspaces and uv projects
+are listed as not inspected (their lockfiles are not read yet). A Cargo
+workspace root is read (`[workspace.dependencies]`, or a note for a
+virtual manifest that declares none), as are its members and Cargo.lock.
+Poetry projects, Go modules and Maven modules in subdirectories are read
+where they are; a Maven version inherited from a parent POM is recorded
+as skipped, never guessed.
+
 ## Uncertainty handling
 
 Unknown version → no version claim. Unknown identity → RELATED, not

@@ -2,7 +2,32 @@
 
 All notable changes to OpenPulse. Versions follow semver; while the project is `0.x`, minor versions may change behavior and are called out under **Upgrade notes**. Intelligence-schema and evidence-contract versions are tracked separately (see `docs/EVIDENCE_CONTRACT.md`).
 
-## Unreleased
+## 0.18.0 "Inspection Coverage Assurance" — 2026-11-07
+
+Phase 12 (M5/M6): repository coverage that never overstates itself. More of a repository is read (requirements variants and their includes, monorepo members under `packages/`, npm and Cargo workspaces); every inspection states what it searched (evidence contract 2.4.0, `inspection_coverage.scope`); and no summary reads as an all-clear over PARTIAL or FAILED coverage. COMPLETE means every dependency file in the search was read; anything else is PARTIAL with each category named. Still open: whether `--fail-on` fails on PARTIAL by default (decision 15; `--fail-on-partial` does today), and readers for `pnpm-lock.yaml`, `yarn.lock` and `uv.lock`, which are listed as not inspected.
+
+### Added
+
+- **Requirements variants read in repository inspection (v0.18.0 item S2).** `--github-repo` and the Action's repository discovery now read `requirements-*.txt`, `requirements_*.txt`, `constraints*.txt` and any `.txt` in a `requirements/` directory with the requirements parser, instead of listing them as "dependency file not supported" (S1). They are parsed as requirements by their name, so a file of only `-r base.txt` and ranges is read, not refused. `-r` and `-c` includes are accounted for: an included file that is in the repository and was inspected keeps coverage COMPLETE; one that was not inspected, or a URL, absolute path or path outside the repository, makes coverage PARTIAL and is named in the coverage reasons. See "Repository inspection coverage" in [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md).
+- **What was searched is recorded (v0.18.0 item S3).** Every repository inspection states its scope: the ref and commit, the file patterns read and the recognised names not read, the directories skipped (`node_modules`, `vendor`, hidden directories, ...) with how many files each held, the tree size, the limits and which of them applied, and how many dependency files were found and read. `check --github-repo` and `attest --github-repo` print it as one line (`searched owner/repo main@<commit>: ...`). **Evidence contract 2.4.0** (additive) carries it as a required `inspection_coverage.scope`, null when no repository was inspected; the 2.3 schema is published unchanged beside it. See [`docs/EVIDENCE_CONTRACT.md`](docs/EVIDENCE_CONTRACT.md).
+- **No all-clear over PARTIAL coverage (v0.18.0 item S4).** Every summary that could read as clear names what was not inspected, by category and count, before the details: `check`, `digest`, `warnings`, the webhook body, the SARIF notification and the Action's job summary. The categories are unsupported dependency files, requirements includes not inspected, files over the size limit, the repository size cap, the file-count cap, a truncated tree, unsafe paths, and files that could not be fetched or parsed. SARIF runs carry them as `inspection_coverage_categories`. `check` no longer ends on a bare "0/N dependencies affected" over PARTIAL or FAILED coverage. `--fail-on` behaviour is unchanged (decision 15 is open; `--fail-on-partial` fails on PARTIAL).
+- **Monorepos and nested workspaces (v0.18.0 item S5).** npm workspace members are read through the workspace's `package-lock.json` and no longer reported as unsupported; a `package.json` no read lockfile lists still is. A Cargo virtual workspace manifest is read (its `[workspace.dependencies]`, or a note when it declares none) instead of being refused, which made coverage PARTIAL. Tests pin npm and pnpm workspaces, Cargo workspaces, Poetry and uv projects in subdirectories, Go multi-module repositories and Maven multi-module builds (`tests/test_monorepos.py`).
+
+### Fixed
+
+- **`packages/` was never searched.** Repository discovery skipped every directory named `packages`, the conventional monorepo directory (npm, pnpm, Yarn and many Python and Go monorepos), so its members' dependency files were never read while coverage could read COMPLETE. It is searched now; only NuGet's restore folder under it (`packages/<Id>.<version>/`) is skipped, and the scope names it `packages-nuget-restore`.
+
+### Upgrade notes
+
+- Dependencies: CI actions bumped (`actions/setup-java` 6.2.0, the CodeQL action group); no runtime dependency changed.
+- **More dependencies from repositories.** A repository with requirements variants now yields their pinned dependencies, so `check --github-repo` may report findings it did not before, and coverage that was PARTIAL only because of those files may now be COMPLETE. A requirements file that includes a file OpenPulse did not inspect now makes coverage PARTIAL where it was COMPLETE.
+- **`openpulse attest` emits evidence contract 2.4.0.** A consumer that accepts exactly 2.3.0 rejects it; validate against `schemas/evidence-contract/v2.4/schema.json`. The only change is `inspection_coverage.scope`.
+- **More of a monorepo is read.** Repositories with members under `packages/` now report those members' dependencies (and possibly new findings), and may move from COMPLETE to PARTIAL where a member uses a format OpenPulse does not read yet (a pnpm or Yarn workspace, `uv.lock`).
+- **Coverage wording.** The coverage line in `digest`, `warnings`, webhook bodies and the SARIF notification now reads `<STATUS> - not inspected: <category> (<n>), ... Details: <reasons>.`; `check` prints `repository inspection coverage: <STATUS> - not inspected: ...`. A consumer that parsed the old `<STATUS> — <reasons>` text should read the SARIF `inspection_coverage` and `inspection_coverage_categories` properties instead.
+
+## 0.17.0 "Gate-to-Install Integrity" — 2026-11-06
+
+Track T Phase 4 (T-E2): what `openpulse gate` passed is what gets installed, or the install is refused. The gate writes a receipt of the bytes it judged; the install step verifies it immediately before installing, including dependency files a build step generated after the gate; and a lockfile hash edited in place fails the gate even under a policy that never mentions `digest_mismatch`. The whole route is tested end to end with a real `pip install --require-hashes`, offline, on Linux and Windows. Still not covered, and documented in the bypass table: an install from a file the gate was not given, a lockfile the install command itself rewrites, a receipt written by hand, and an install step that skips the verification. Receipts are integrity records within one pipeline run, not signatures.
 
 ### Added
 
@@ -13,14 +38,30 @@ All notable changes to OpenPulse. Versions follow semver; while the project is `
 
   Each file is hashed before and after it is read; a file that changed in between fails the gate (exit 2). A receipt is an integrity record within one pipeline run, not a signature. See "Gate receipts" in [`docs/TRUST_POLICY.md`](docs/TRUST_POLICY.md). Verifying it before install is item G2.
 - **Verify before install (v0.17.0 item G2).** `openpulse gate --verify-receipt RECEIPT FILE...` exits 0 only when every named file was gated by a passing gate and still has the SHA-256 it recorded. A file that changed, was not gated, or comes from a gate that did not pass exits 1; an unreadable receipt exits 2. It takes a receipt or a directory of receipts, repeatable. The GitHub Action's `gate` input writes one receipt per file and names their directory in a new `receipts` output, so the install step can verify first. See "Verify before install" in [`docs/TRUST_POLICY.md`](docs/TRUST_POLICY.md).
+- **Generated dependency files (v0.17.0 item G4).** `--verify-receipt` takes `--require-receipt-for PATTERN` (repeatable): every existing file matching the glob must be covered by a passing receipt, so a lockfile a build step generated or regenerated after the gate cannot reach install unverified. A pattern that matches nothing is noted, not refused. The generate-then-gate-then-verify order is documented under "Generated dependency files" in [`docs/TRUST_POLICY.md`](docs/TRUST_POLICY.md). `openpulse gate` with no file is now a usage error from the gate itself (exit 2, as before).
+- **End-to-end install tests (v0.17.0 item G5).** `tests/test_e2e_install.py` runs the pipeline offline in CI on Linux and Windows: wheels built in the test, a local `--find-links` index, PyPI's digests stubbed, then gate, verify and `pip install --require-hashes`. A clean change installs the published artifact; a lockfile swapped after the gate (G2), a hash edited in place under a policy without `digest_mismatch` (G3) and a lockfile regenerated after the gate (G4) install nothing; and `--require-hashes` refuses an artifact the gated hashes do not name. Both the accepted and the refused installs are asserted.
+- **Docs for the whole route (v0.17.0 item G6).** `docs/TRUST_POLICY.md` shows the generate, gate, verify, install order in CI, with the verification and the install in one command, and its bypass table now says what receipts cannot cover: a receipt written by hand, and an install step that skips the verification. `docs/GITHUB_ACTION.md` lists receipt limits; the README summarises v0.17.0 on `main`.
 
 ### Changed
 
 - **`openpulse gate` always checks changed lockfile digests (v0.17.0 item G3, decision 14).** Once a policy exists, the gate enforces `digest_mismatch` for every package, whatever the policy says. A lockfile hash edited in place (same name and version, another artifact) can no longer pass a policy that forgot the rule. A scoped `digest_mismatch` rule is widened to every package in the gate. `check` and `attest` enforce the policy as written.
 
+### Fixed
+
+- **Poetry locks are read as Poetry writes them** (#319, thanks @arin30). Poetry puts `lock-version` under `[metadata]`; both lockfile readers looked for it at the document root, so a normal `poetry.lock` was rejected by `read_lockfile` and `lockfile_digests` returned no hashes. Root-level markers are still accepted.
+- **npm aliases are checked under their registry name** (#320, thanks @arin30). An alias such as `number-alias@npm:is-number@7.0.0` was checked, and its integrity hash filed, under the install name `number-alias`; the lockfile entry's `name` is now used when present, for dependencies and digests alike.
+
+### Docs and research
+
+- The monthly reports published at https://openpulse.ikaruslabs.net/ are linked from the README, `docs/ANALYSTS.md` and `docs/METHODOLOGY.md`.
+- Track T study, Part A, prepared and not yet run: star-history recorders, the organic and young organic sets, thresholds calibrated on organic data only, the pre-registered analysis code and the registration package (`docs/research/TRACK_T_STUDY_PROTOCOL.md`, `docs/research/TRACK_T_REGISTRATION.md`). Author-run with AI assistance; no held-out or labelled data has been read. No product behaviour depends on it.
+
 ### Upgrade notes
 
 - **A gate with a policy now asks the registry about changed lockfile entries**, even when the policy does not prohibit `digest_mismatch`. If PyPI or npm cannot be reached, that check is unchecked and fails the gate, as any prohibited check does. Set `unchecked: pass` in the policy to restore passing on unchecked checks. A gate without a policy is unchanged.
+- **`openpulse gate` with no file** is rejected by the gate itself (exit 2, as before), since the file argument is optional with `--verify-receipt`.
+- **The Action's `gate` input writes receipts** into a fresh directory under `RUNNER_TEMP` and sets a new `receipts` output. Nothing else about the step changes; verify them in your install step (see `docs/GITHUB_ACTION.md`).
+- Evidence contract unchanged (2.3.0); verdicts unchanged.
 
 ## 0.16.1 — 2026-11-03
 

@@ -734,9 +734,10 @@ def _git_base_copy(path: str, ref: str, out_dir: str) -> str | None:
     return str(target)
 
 
-def _verify_receipts(receipt_paths, paths):
+def _verify_receipts(receipt_paths, paths, required=()):
     """G2: exit 0 when every path may be installed on the receipts' strength,
-    1 when one may not, 2 when a receipt cannot be read."""
+    1 when one may not, 2 when a receipt cannot be read. G4: every existing
+    file matching a ``required`` pattern is verified too."""
     from core import gate_receipt
 
     receipts = []
@@ -744,9 +745,17 @@ def _verify_receipts(receipt_paths, paths):
         for given in receipt_paths:
             for path in gate_receipt.receipt_files(given):
                 receipts.append((gate_receipt.receipt_path(path), gate_receipt.load(path)))
+        matched, unmatched = gate_receipt.required_files(list(required))
     except ValueError as e:
         _echo(f"gate: {strip_unsafe(str(e))[:300]}", err=True)
         raise SystemExit(2) from e
+    for pattern in unmatched:
+        _echo(f"gate: --require-receipt-for {strip_unsafe(pattern)[:200]}: no such file", err=True)
+    keys = {gate_receipt._key(p) for p in paths}
+    paths = list(paths) + [m for m in matched if gate_receipt._key(m) not in keys]
+    if not paths:
+        _echo("gate: nothing to verify: name the files to install, or a pattern that matches")
+        raise SystemExit(2)
     problems = gate_receipt.verify(receipts, list(paths))
     for problem in problems:
         _echo(f"gate: REFUSED {strip_unsafe(problem)[:300]}", err=True)
@@ -764,7 +773,7 @@ def _verify_receipts(receipt_paths, paths):
 
 
 @cli.command(name="gate")
-@click.argument("paths", nargs=-1, required=True, type=click.Path(dir_okay=False))
+@click.argument("paths", nargs=-1, type=click.Path(dir_okay=False))
 @click.option(
     "--base-ref",
     default=None,
@@ -801,9 +810,25 @@ def _verify_receipts(receipt_paths, paths):
     "the same SHA-256 now (exit 1 otherwise). A receipt file or a directory of them; "
     "repeatable. Run it immediately before install",
 )
+@click.option(
+    "--require-receipt-for",
+    "required",
+    multiple=True,
+    metavar="PATTERN",
+    help="With --verify-receipt: every existing file matching this glob (poetry.lock, "
+    "'**/package-lock.json') must be verified too, so a dependency file a build step "
+    "generated after the gate cannot be installed unverified. Repeatable",
+)
 @_policy_option
 def gate_command(
-    paths, base_ref, base_paths, private_names, policy_path, receipt_out, verify_receipts
+    paths,
+    base_ref,
+    base_paths,
+    private_names,
+    policy_path,
+    receipt_out,
+    verify_receipts,
+    required,
 ):
     """Pre-install trust gate (track T, T-E2): the trust policy on dependency files.
 
@@ -829,14 +854,18 @@ def gate_command(
     from core import dependency_confusion as _confusion
     from core import trust_policy as _trust_policy
 
+    if required and not verify_receipts:
+        raise click.UsageError("--require-receipt-for is part of --verify-receipt")
     if verify_receipts:
         if base_ref or base_paths or receipt_out or policy_path or private_names:
             raise click.UsageError(
                 "--verify-receipt checks files against a receipt; it takes no "
                 "--base-ref, --base, --receipt, --policy or --private-names"
             )
-        _verify_receipts(verify_receipts, paths)
+        _verify_receipts(verify_receipts, paths, required)
         return
+    if not paths:
+        raise click.UsageError("name at least one dependency file to gate")
     if base_ref and base_paths:
         raise click.UsageError("use --base-ref or --base, not both")
     if base_paths and len(base_paths) != len(paths):
@@ -1733,14 +1762,36 @@ def _coverage_summary(inspections) -> tuple[str, list[str]]:
     return status, reasons
 
 
+def _scope_line(inspection) -> str | None:
+    """One line saying what a repository inspection searched (S3), or None."""
+    scope = getattr(inspection, "scope", None)
+    if not scope:
+        return None
+    skipped = ", ".join(
+        f"{d['directory'] or 'other'} ({d['files']})" for d in scope["skipped_directories"][:5]
+    )
+    more = len(scope["skipped_directories"]) - 5
+    if more > 0:
+        skipped += f", +{more} more"
+    return (
+        f"searched {scope['repository']} {scope['ref']}@{scope['commit'][:12]}: "
+        f"{scope['files_read']}/{scope['files_found']} dependency file(s) read from "
+        f"{scope['tree_entries']} tree entries; skipped directories: {skipped or 'none'}; "
+        f"limits reached: {', '.join(scope['limits_reached']) or 'none'}"
+    )
+
+
 def _coverage_note(inspections) -> str | None:
     """One line for the rendered body when a repository was not fully read (#102).
 
     The terminal preamble alone is not enough: the body is what reaches a
     webhook, and "nothing upcoming" over an unread repository is unknown
     dressed as clear. None when every inspection is COMPLETE or no
-    repository was inspected, so those outputs are unchanged.
+    repository was inspected, so those outputs are unchanged. The line
+    names the categories not inspected first (S4), then the details.
     """
+    from core import coverage
+
     if not inspections:
         return None
     status, reasons = _coverage_summary(inspections)
@@ -1748,8 +1799,8 @@ def _coverage_note(inspections) -> str | None:
         return None
     why = "; ".join(reasons) or "no reason recorded"
     return (
-        f"⚠️ Repository inspection coverage: {status} — {why}. "
-        "Results are not a clean bill of health."
+        f"⚠️ Repository inspection coverage: {coverage.describe(status, reasons)}. "
+        f"Details: {why}. Results are not a clean bill of health."
     )
 
 
@@ -1825,9 +1876,11 @@ def _deliver_alerts(
 
 def _echo_run_coverage(inspections) -> str:
     """Print the run-level repository coverage (if any) and return it."""
+    from core import coverage
+
     status, reasons = _coverage_summary(inspections)
     if inspections:
-        _echo(f"repository inspection coverage: {status}")
+        _echo(f"repository inspection coverage: {coverage.describe(status, reasons)}")
         for reason in reasons:
             _echo(f"   - {reason}")
     return status
@@ -2006,6 +2059,8 @@ def _load_check_inputs(
         for reason in inspection.coverage_reasons:
             _echo(f"! coverage: {reason}")
         _echo(f"github-repo ({github_repo}): inspection coverage {inspection.coverage}")
+        if line := _scope_line(inspection):
+            _echo(f"github-repo ({github_repo}): {line}")
         inspections.append(inspection)
         if inspection.dependencies:
             _echo(
@@ -2352,7 +2407,14 @@ def check(
         )
         for reason in reasons:
             _echo(f"   - {reason}")
-    _echo(f"\n{affected}/{len(deps)} dependencies affected")
+    if run_coverage in ("PARTIAL", "FAILED"):
+        # S4: the count alone reads as an all-clear over an unread repository.
+        _echo(
+            f"\n{affected}/{len(deps)} dependencies affected, over {run_coverage} repository "
+            "coverage: what was not inspected was not checked (see above)"
+        )
+    else:
+        _echo(f"\n{affected}/{len(deps)} dependencies affected")
     from core.risk.check import fail_on_threshold, strict_affected
 
     # Same gate as the digest branch: --fail-on must not depend on
@@ -2809,7 +2871,7 @@ def _warnings_gate(built, fail_on, inspections) -> None:
     "trust",
     is_flag=True,
     help="Also check trust for PyPI and npm dependencies (live lookups) and record it in "
-    "each contract's trust_assurance (2.3.0); never part of a verdict",
+    "each contract's trust_assurance (2.4.0); never part of a verdict",
 )
 @click.option(
     "--private-names",
@@ -2974,6 +3036,8 @@ def attest(
             f"github-repo ({github_repo}): inspection coverage {inspection.coverage}",
             err=True,
         )
+        if line := _scope_line(inspection):
+            _echo(f"github-repo ({github_repo}): {line}", err=True)
         inspections.append(inspection)
         if inspection.dependencies:
             _echo(
@@ -3012,6 +3076,8 @@ def attest(
     # contract 2.1 says NOT_APPLICABLE, not COMPLETE coverage of a scan
     # that never happened (#109).
     coverage_override = {"status": "NOT_APPLICABLE", "reasons": []}
+    # One repository input per run: its scope (S3, contract 2.4) is the run's.
+    inspection_scope = inspections[0].scope if len(inspections) == 1 else None
     if inspections:
         run_status, run_reasons = _coverage_summary(inspections)
         _echo(f"repository inspection coverage: {run_status}", err=True)
@@ -3053,6 +3119,7 @@ def attest(
                 as_of=evaluation.as_of,
                 max_evidence_age=evaluation.max_evidence_age,
                 trust_assurance=trust_blocks.get(index),
+                inspection_scope=inspection_scope,
             )
             problems = validate_contract(doc)
             if problems:

@@ -33,7 +33,7 @@ The job summary lists them in their own *Trust checks* table.
 
 Every result carries the evidence URLs and the `provenance.content_hash` of the contract it renders. You can recompute the hash from the contract's content.
 
-**Unknown stays unknown.** If no event applies to a dependency, the action reports it once as a `note` under `openpulse/no-applicable-evidence`. It is never dropped. If repository inspection coverage is `PARTIAL` or `FAILED`, you get a warning annotation and the SARIF carries a tool notification. Partial coverage is never reported as a pass. With any `fail-on` other than `none`, FAILED coverage (a repository OpenPulse could not read) fails the job.
+**Unknown stays unknown.** If no event applies to a dependency, the action reports it once as a `note` under `openpulse/no-applicable-evidence`. It is never dropped. If repository inspection coverage is `PARTIAL` or `FAILED`, you get a warning annotation and the SARIF carries a tool notification. Both, and the job summary's coverage line, name what was not inspected by category with counts (unsupported dependency files, files over the size limit, a truncated tree, ...), and the SARIF run properties carry them as `inspection_coverage_categories` (v0.18.0). Partial coverage is never reported as a pass. With any `fail-on` other than `none`, FAILED coverage (a repository OpenPulse could not read) fails the job.
 
 ## Inputs
 
@@ -80,7 +80,7 @@ Two inputs bring track T's trust checks into the job. Both are off by default, s
 
 | Input | Values | What it does |
 |---|---|---|
-| `trust` | `off` (default), `pull-request`, `all` | Trust checks with live lookups: known-malicious records, registry existence, provenance, repository linkage, lookalike names, and the reputation indicators (publisher change, moved repository, young repository with many stars). `pull-request` checks only the dependencies a pull request adds or changes, compared with the base branch's copy of `manifest` and `lockfile`. `all` checks every dependency on every run. Results are recorded in each contract's `trust_assurance` (evidence contract 2.3.0) |
+| `trust` | `off` (default), `pull-request`, `all` | Trust checks with live lookups: known-malicious records, registry existence, provenance, repository linkage, lookalike names, and the reputation indicators (publisher change, moved repository, young repository with many stars). `pull-request` checks only the dependencies a pull request adds or changes, compared with the base branch's copy of `manifest` and `lockfile`. `all` checks every dependency on every run. Results are recorded in each contract's `trust_assurance` (evidence contract 2.4.0) |
 | `policy` | a path, or empty | A trust policy ([`docs/TRUST_POLICY.md`](TRUST_POLICY.md)). Empty uses `.openpulse/policy.yml` when the repository has one. A prohibited condition fails the step, even with `fail-on: none` |
 
 ```yaml
@@ -93,7 +93,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.16.1
+      - uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.18.0
         with:
           manifest: requirements.txt
           lockfile: poetry.lock
@@ -125,7 +125,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - id: openpulse
-        uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.16.1
+        uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.18.0
         with:
           gate: requirements.txt poetry.lock
       # ... other steps ...
@@ -133,7 +133,8 @@ jobs:
         env:
           RECEIPTS: ${{ steps.openpulse.outputs.receipts }}
         run: |
-          "$OPENPULSE_BIN/openpulse" gate --verify-receipt "$RECEIPTS" requirements.txt poetry.lock
+          "$OPENPULSE_BIN/openpulse" gate --verify-receipt "$RECEIPTS" \
+            --require-receipt-for 'requirements*.txt' --require-receipt-for poetry.lock
           pip install --require-hashes -r requirements.txt
 ```
 
@@ -143,7 +144,7 @@ jobs:
 - **Other events:** without a base commit (`push`, `schedule`), every dependency is checked.
 - **Isolation:** OpenPulse runs in its own virtual environment, installed from its hash-locked runtime set, so the gate itself installs none of your dependencies. The job token reads the base files only and is removed before the trust lookups.
 - **Outputs:** `threshold-breached` is `true` on a violation. `receipts` is the directory of gate receipts, one per gated file (v0.17.0 item G2). `sarif-file`, `contracts-file` and `inspection-coverage` are empty, and `upload-sarif` is ignored.
-- **Verify before install:** the gate judges the files as they are when it runs. Run `openpulse gate --verify-receipt` on the `receipts` directory and the same files in the step that installs, so a file a later step changed is refused (exit 1) instead of installed. The action's virtual environment stays on `$OPENPULSE_BIN` for the rest of the job. See *Verify before install* in [`docs/TRUST_POLICY.md`](TRUST_POLICY.md).
+- **Verify before install:** the gate judges the files as they are when it runs. Run `openpulse gate --verify-receipt` on the `receipts` directory and the same files in the step that installs, so a file a later step changed is refused (exit 1) instead of installed. `--require-receipt-for` adds every existing file matching a pattern, so a dependency file a build step generated after the gate is refused too (v0.17.0 item G4). If the build generates a lockfile, put the action after that step. The action's virtual environment stays on `$OPENPULSE_BIN` for the rest of the job. See *Verify before install* in [`docs/TRUST_POLICY.md`](TRUST_POLICY.md).
 - **Without a policy** the gate passes and says so.
 
 ## Pinning
@@ -151,7 +152,7 @@ jobs:
 Pin the action to a full commit SHA, as `.github/workflows/ci.yml` does for every action it uses:
 
 ```yaml
-- uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.16.1
+- uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.18.0
 ```
 
 The action pins its own dependencies by SHA too: `actions/setup-python` and `github/codeql-action/upload-sarif`.
@@ -183,7 +184,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.16.1
+      - uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.18.0
         with:
           manifest: requirements.txt
           lockfile: poetry.lock
@@ -216,7 +217,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - id: openpulse
-        uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.16.1
+        uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.18.0
         with:
           upload-sarif: 'true'
           fail-on: none            # report, do not fail the scheduled run
@@ -231,4 +232,6 @@ jobs:
 - The gate counts ACTION/CRITICAL causes. Phase C3 asks for causes *backed by keyed-valid evidence*, which depends on keyed integrity (Phase B3), and that has not shipped yet. Until it does, the gate trusts the event's evidence as `attest` validates it today.
 - Results are anchored to the input file, not to a line. Code Scanning shows them at file level.
 - Image refs can produce `note` (RELATED) results for events scoped to packages: the engine cannot compare them, so it says so instead of guessing.
+- Gate receipts are not signed: they prove, within one job, that the files installed are the ones the gate passed. Verify them in the same job that wrote them (the `receipts` output), never from an artifact a pull request controls.
+- `--verify-receipt` checks the files it is given and those its `--require-receipt-for` patterns match. An install command that rewrites its lockfile while installing (`npm install`, not `npm ci`) changes it after the check.
 - Not published to the GitHub Marketplace yet. That needs a tagged release.

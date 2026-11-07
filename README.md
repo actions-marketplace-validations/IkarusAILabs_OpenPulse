@@ -49,7 +49,7 @@ What makes the evidence usable:
 **For AI coding agents.** `openpulse mcp` is an [MCP](https://modelcontextprotocol.io) server, so Claude Code, Cursor, Copilot and other clients can ask before they change a dependency:
 
 ```bash
-pip install "ikarus-openpulse[mcp] @ git+https://github.com/IkarusAILabs/OpenPulse@v0.16.1"
+pip install "ikarus-openpulse[mcp] @ git+https://github.com/IkarusAILabs/OpenPulse@v0.18.0"
 claude mcp add openpulse -- openpulse mcp      # Claude Code
 ```
 
@@ -91,7 +91,7 @@ permissions:
 steps:
   - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     with: {persist-credentials: false}
-  - uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.16.1
+  - uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.18.0
     with:
       manifest: requirements.txt
       fail-on: action        # fail only on ACTION/CRITICAL upstream findings
@@ -128,14 +128,14 @@ Track T of the [roadmap](docs/ROADMAP.md), *AI Dependency Trust Assurance*. Each
 | `repository_moved` | Does the claimed repository now answer under another name? | indicator | 4.1% of repositories |
 | `young_popular_repository` | Is the repository younger than 180 days with at least 1000 stars? | indicator | experimental |
 
-An indicator (SUSPICIOUS_INCONCLUSIVE) is never a verdict: legitimate projects change maintainers, move to organisations and launch to many stars. `publisher_change`, `repository_moved` and `young_popular_repository` are on `main` and ship in v0.16.0. Rates and method: [`docs/research/TRACK_T_MEASUREMENTS.md`](docs/research/TRACK_T_MEASUREMENTS.md).
+An indicator (SUSPICIOUS_INCONCLUSIVE) is never a verdict: legitimate projects change maintainers, move to organisations and launch to many stars. `publisher_change`, `repository_moved` and `young_popular_repository` shipped in v0.16.0. Rates and method: [`docs/research/TRACK_T_MEASUREMENTS.md`](docs/research/TRACK_T_MEASUREMENTS.md).
 
 Where the evidence goes:
 
 - **Agents:** the `trust` block in `dependency_status` and `check_dependency_file`, with what needs attention listed first.
 - **People:** `openpulse trust FILE [--base EARLIER]` (report-only) and `openpulse confusion` for your private names.
 - **Gates:** the trust policy in `openpulse gate`, `check --policy`, `attest --policy` and the Action.
-- **Records:** `attest --trust` writes each dependency's checks into the evidence contract's `trust_assurance` (contract 2.3.0), covered by its content hash, and into SARIF and DefectDojo.
+- **Records:** `attest --trust` writes each dependency's checks into the evidence contract's `trust_assurance` (contract 2.4.0), covered by its content hash, and into SARIF and DefectDojo.
 
 ## Upstream change intelligence: after it is in
 
@@ -157,7 +157,7 @@ How OpenPulse answers *"does it affect us?"*:
 
 - **Evidence-gated events.** Every event carries source URLs, announcement and effective dates, and a confidence level (`CONFIRMED`, `CORROBORATED`, `EMERGING`, `UNVERIFIED`). A source counts as official only when its host is on the project's allowlist, and sources sharing a registrable domain count once. `UNVERIFIED` can never produce an `ACTION`.
 - **Identity before impact.** `docker.io/bitnami/redis` and `docker.io/redis` are different projects, so a Bitnami distribution event alerts Bitnami users without false-alarming upstream Redis users. Untrusted identity mappings cap the verdict.
-- **Your exact versions.** Watchlists, CycloneDX and SPDX SBOMs, image lists, `package-lock.json`, `poetry.lock` and `Cargo.lock`, `requirements.txt`, `pyproject.toml`, `pom.xml`, `go.mod`, `Cargo.toml`, and whole GitHub repositories (commit- and blob-pinned, with stated inspection coverage) all go through one verdict engine.
+- **Your exact versions.** Watchlists, CycloneDX and SPDX SBOMs, image lists, `package-lock.json`, `poetry.lock` and `Cargo.lock`, `requirements.txt` and its variants (`requirements-dev.txt`, `requirements/*.txt`, `constraints.txt`, in repositories), `pyproject.toml`, `pom.xml`, `go.mod`, `Cargo.toml`, and whole GitHub repositories (commit- and blob-pinned, with stated inspection coverage) all go through one verdict engine.
 - **Early warning.** `digest` and `warnings` list upcoming deadlines; scheduled `check --webhook` posts each new alert once, with retries and signed posts ([`docs/SCHEDULED_CHECKS.md`](docs/SCHEDULED_CHECKS.md)). A detection ledger records when OpenPulse first saw each change, so lead time can be measured. With a history key the ledger is tamper-evident ([`docs/KEYED_INTEGRITY.md`](docs/KEYED_INTEGRITY.md)).
 - **Discovery.** `openpulse discover` probes the repositories and images your files name, and `observe` and `sweep` diff registry observations, turning moves, archives and removed tags into events.
 
@@ -199,10 +199,23 @@ The full list, including what an attacker with write access to local history can
 - **Collectors:** GitHub, OSV, NVD, MITRE CVE, CISA KEV, endoflife.date and Docker Hub, plus PyPI, npm and the GitHub API for trust checks. Errors become data, never crashes; every response is size-capped while it streams.
 - **Analysts:** Change, Security, Evidence and Report, behind an evidence gate with veto power.
 - **History:** hash-chained registry observations and a detection ledger, MACed with a history key, with anchors kept outside the store. History committed to the repository is refused.
-- **Outputs:** evidence contract 2.3.0 (older versions still validate), SARIF 2.1.0, Markdown summaries, DefectDojo, Dependency-Track, signed webhooks, and monthly and lifecycle reports.
+- **Outputs:** evidence contract 2.4.0 (older versions still validate), SARIF 2.1.0, Markdown summaries, DefectDojo, Dependency-Track, signed webhooks, and monthly and lifecycle reports.
 - **Quality:** more than 2,100 offline tests (count reported by CI), `ruff` clean, CI on Linux and Windows with CodeQL, pip-audit, a lock-drift check, a deterministic SBOM and a secret tripwire. Every install is hash-checked against complete locks.
 
 ## What's new
+
+**v0.18.0 "Inspection Coverage Assurance":** repository coverage that never overstates itself.
+
+- **More is read:** requirements variants (`requirements-dev.txt`, `requirements/*.txt`, `constraints.txt`), monorepo members under `packages/` (skipped before, a fix), npm workspace members through their lockfile, and Cargo workspace roots. A `-r`/`-c` include that was not inspected makes coverage PARTIAL.
+- **What was searched is stated:** ref and commit, file patterns, skipped directories with counts, the limits that applied, files found and read; in `check` and `attest`, and as `inspection_coverage.scope` in evidence contract 2.4.0.
+- **No all-clear over PARTIAL:** every summary that could read as clear names what was not inspected, by category and count.
+
+**v0.17.0 "Gate-to-Install Integrity":** what `openpulse gate` passed is what gets installed, or the install is refused.
+
+- **Receipts:** `openpulse gate --receipt PATH` records the SHA-256 of every file it judged, the policy, the decision and every violation.
+- **Verify before install:** `openpulse gate --verify-receipt PATH FILE...` refuses (exit 1) any file that changed since the gate, was not gated, or comes from a gate that did not pass. `--require-receipt-for PATTERN` catches dependency files a build step generated after the gate. The Action's `gate` input writes receipts and names them in a `receipts` output.
+- **Lockfile digests always checked by the gate:** once a policy exists, a hash edited in place fails the gate even if the policy never mentions `digest_mismatch`.
+- **Tested end to end:** gate, verify and a real `pip install --require-hashes`, offline, on Linux and Windows.
 
 **v0.16.1:** `openpulse gate` no longer crashes when a private-name list is in use (the Action passes one whenever the base branch has it).
 
@@ -303,7 +316,7 @@ tests/              # offline tests (no network in CI)
 | [`docs/TRUST_POLICY.md`](docs/TRUST_POLICY.md) | Trust policy, `openpulse gate`, pre-commit, bypass routes |
 | [`docs/GITHUB_ACTION.md`](docs/GITHUB_ACTION.md) | The GitHub Action: inputs, permissions, SARIF levels, workflows |
 | [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md) | DefectDojo and Dependency-Track |
-| [`docs/EVIDENCE_CONTRACT.md`](docs/EVIDENCE_CONTRACT.md) | Evidence contract 2.3 and every earlier version |
+| [`docs/EVIDENCE_CONTRACT.md`](docs/EVIDENCE_CONTRACT.md) | Evidence contract 2.4 and every earlier version |
 | [`docs/research/TRACK_T_MEASUREMENTS.md`](docs/research/TRACK_T_MEASUREMENTS.md) | How each trust check is measured, with false-positive rates |
 | [`docs/SCHEDULED_CHECKS.md`](docs/SCHEDULED_CHECKS.md) | Scheduled checks, the detection ledger, webhook delivery |
 | [`docs/KEYED_INTEGRITY.md`](docs/KEYED_INTEGRITY.md) | History keys, anchors and what they protect against |
@@ -320,7 +333,7 @@ tests/              # offline tests (no network in CI)
 Two tracks share one evidence model:
 
 - **Upstream change intelligence:** M1 Trusted Evidence ✅ → M2 Upstream Discovery ✅ → M3 Report Product ✅ → M4 Benchmark 🔨 (11 formalized scenarios) → M5 Dependency Context ✅ → M6 Early Warning 🔨 (ledger, digest, warnings, signed webhook delivery with retries, and the GitHub Action shipped) → M7 Network → M8 AI-mediated direction → M9 combined assurance experiment (research).
-- **Track T, AI Dependency Trust Assurance:** identity and integrity checks (v0.12), agent trust evidence and contract 2.2 (v0.13), trust policy and measurements (v0.14), pre-install gates (v0.15), reputation indicators and contract 2.3 (v0.16, on `main`). The research questions, such as whether trust evidence changes what agents and people choose, remain open.
+- **Track T, AI Dependency Trust Assurance:** identity and integrity checks (v0.12), agent trust evidence and contract 2.2 (v0.13), trust policy and measurements (v0.14), pre-install gates (v0.15), reputation indicators and contract 2.3 (v0.16), gate-to-install integrity (v0.17). The research questions, such as whether trust evidence changes what agents and people choose, remain open.
 
 Full sequence, principles and metrics: [`docs/ROADMAP.md`](docs/ROADMAP.md); research framing: [`docs/research/RESEARCH_ALIGNMENT.md`](docs/research/RESEARCH_ALIGNMENT.md).
 
