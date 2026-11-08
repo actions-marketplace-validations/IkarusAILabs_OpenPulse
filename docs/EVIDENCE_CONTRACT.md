@@ -10,7 +10,8 @@ signatures and trust roots are a separate, later concern, per issue
 - Schema (current, 2.4): [`schemas/evidence-contract/v2.4/schema.json`](../schemas/evidence-contract/v2.4/schema.json)
   (JSON Schema draft 2020-12); 2.3, 2.2, 2.1, 2.0, 1.2, 1.1 and 1.0 stay published beside it
 - Hash verifier with no OpenPulse code (Node 18+): [`conformance/evidence-contract/verify.mjs`](../conformance/evidence-contract/verify.mjs). It accepts only the published 2.x versions, and a `provenance.contract_version` equal to the top level (v0.19.0 P2)
-- Standalone consumer with no OpenPulse code (Python 3.11+, one dependency: `jsonschema`): [`conformance/consumer/`](../conformance/consumer/README.md), `openpulse-consumer check contracts.jsonl` validates each document against exactly the schema its version names (v0.19.0 P1). A new schema is copied into it with `python conformance/consumer/sync_schemas.py`; OpenPulse's tests fail until it is
+- Standalone consumer with no OpenPulse code (Python 3.11+, one dependency: `jsonschema`): [`conformance/consumer/`](../conformance/consumer/README.md), `openpulse-consumer check contracts.jsonl` validates each document against exactly the schema its version names (v0.19.0 P1); `openpulse-consumer summary contracts.jsonl` counts relationship, inspection coverage and trust apart, lists what each document leaves open, and has no pass (P4).
+- Released-contract corpus: [`conformance/contracts/`](../conformance/contracts/README.md), documents written by the release that first emitted each version (1.0.0 to 2.4.0), and one-rule negatives with the path each must be rejected at; regenerated from the producers' pinned commits (v0.19.0 P5) A new schema is copied into it with `python conformance/consumer/sync_schemas.py`; OpenPulse's tests fail until it is
 - Builder + standalone validator: [`core/evidence_contract.py`](../core/evidence_contract.py)
 - Convergence layer (the v0.1.0 inward shape): [`core/attestation.py`](../core/attestation.py)
 - CLI: `openpulse attest`
@@ -56,15 +57,24 @@ JCS is RFC 8785: members sorted by the UTF-16 code units of their names, numbers
 
 - Python: `core.evidence_contract.verify_content_hash(doc)` (any contract version; the JCS encoder is `core/jcs.py`, stdlib only).
 - Node: `node conformance/evidence-contract/verify.mjs contracts.jsonl` (exit 1 when a document fails).
+- Python without OpenPulse: `openpulse-consumer check contracts.jsonl` ([`conformance/consumer/`](../conformance/consumer/README.md)) validates each document and recomputes its hash, for 2.x and 1.x alike, with its own stdlib JCS (v0.19.0 P3).
 
 The same logical document still hashes identically at any build time, and any content edit changes the hash. A document whose `content_hash_method` is not `jcs-sha256` does not verify as 2.x.
 
 ### 1.x
 
 
-`sha256:<hex>` over canonical JSON (sorted keys, compact separators)
-of every top-level field except the planned (always-null) signature
-family, with the two clock/hash-dependent provenance values pinned:
+`sha256:<hex>` over Python's `json.dumps(body, sort_keys=True,
+separators=(",", ":"))` (ASCII-escaped) of the version's hashed fields,
+with the two clock/hash-dependent provenance values pinned. The fields:
+
+- 1.0: `contract_version`, `event_context`, `identity`, `scope`,
+  `affected_dependency`, `assessment`, `evidence_refs`, `temporal`,
+  `unknowns`, `recommendation`, `provenance`;
+- 1.1: those and `inspection_coverage`;
+- 1.2: those and `verdict_meaning`, `evaluation_context`.
+
+The pinned values:
 
 - `provenance.content_hash` -> `"sha256:pending"`
 - `provenance.generation_timestamp` -> `"1970-01-01T00:00:00Z"`
