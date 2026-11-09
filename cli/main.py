@@ -623,6 +623,17 @@ def _untracked(_ctx, param, value):
     return value
 
 
+def _store_root(ctx, param, value):
+    """Click callback for an observation store: never empty, never tracked by git.
+
+    An empty root is the current directory: history would be written among
+    the user's own files, beside whatever they hold.
+    """
+    if not str(value or "").strip():
+        raise click.BadParameter("needs a directory (the default is .openpulse/observations)")
+    return _untracked(ctx, param, value)
+
+
 def _report_violations(violations) -> bool:
     """Print each violation; True when the run must fail."""
     for v in violations:
@@ -1326,7 +1337,7 @@ def demo_bitnami():
     "--store",
     default=".openpulse/observations",
     help="History root directory",
-    callback=_untracked,
+    callback=_store_root,
 )
 @click.option(
     "--rebaseline",
@@ -1402,7 +1413,147 @@ def observe(
         _echo("\n" + report_analyst.render_finding_md(finding))
 
 
-def _observe_catalog_repositories(catalog, store, history_key, previous_keys):
+#: Release-license transitions older than this are history, not news: a
+#: report includes only the ones published within it (the command shows all).
+RECENT_RELEASE_LICENSE_DAYS = 365
+
+
+def _catalog_release_licenses(catalog, today=None, fetch_json=None):
+    """LICENSE_CHANGE findings for the catalog's npm and PyPI packages (C3).
+
+    The most recent transition per package, and only when its release was
+    published within RECENT_RELEASE_LICENSE_DAYS. A package that cannot be
+    compared contributes nothing and is reported.
+    """
+    from datetime import date as _date
+    from datetime import timedelta as _timedelta
+
+    from core.release_license import check as release_license_check
+
+    today = today or _date.today()
+    floor = str(today - _timedelta(days=RECENT_RELEASE_LICENSE_DAYS))
+    findings = []
+    for entry in catalog:
+        for package in entry.get("packages") or []:
+            if str(package.get("ecosystem")) not in ("npm", "PyPI"):
+                continue
+            result = release_license_check(
+                package["ecosystem"], str(package.get("name")), fetch_json=fetch_json
+            )
+            if result["status"] != "COMPARED":
+                _echo(f"release licenses skipped for {result['purl']}: {result['reason']}")
+                continue
+            for finding in change_analyst.analyze_release_license_changes(result, today=today):
+                if str(finding.get("effective_at") or "")[:10] >= floor:
+                    findings.append(finding)
+    return findings
+
+
+@cli.command("release-license")
+@click.option(
+    "--ecosystem", required=True, type=click.Choice(["npm", "PyPI"], case_sensitive=False)
+)
+@click.option("--package", "name", required=True, help="Package name, as the registry spells it")
+@click.option(
+    "--version",
+    "version",
+    default=None,
+    help="Your version: list every license change in the releases after it",
+)
+def release_license(ecosystem, name, version):
+    """Compare the licenses a registry records per release (v0.20.0 C3).
+
+    npm lists every release's license; PyPI is read for two releases (yours,
+    or the one before the latest, and the latest). A changed license is a
+    finding to review, never a verdict.
+    """
+    from core.release_license import check as release_license_check
+
+    result = release_license_check(ecosystem, name, version)
+    if result["status"] != "COMPARED":
+        _echo(f"not compared: {result['reason']}")
+        raise SystemExit(1)
+    latest = result["latest"] or {}
+    _echo(
+        f"{result['purl']}: latest {latest.get('version')} is licensed "
+        f"{latest.get('license') or 'without a declared license'}; "
+        f"{result['releases_compared']} release(s) with a declared license compared"
+    )
+    for pair in result["not_comparable"]:
+        _echo(
+            f"- not comparable: {pair['from_version']} -> {pair['to_version']} "
+            "(different kinds of license record)"
+        )
+    if not result["transitions"]:
+        scope = f"after {version}" if version else "in the most recent change"
+        _echo(f"no license change {scope}.")
+        return
+    for finding in change_analyst.analyze_release_license_changes(result):
+        _echo("\n" + report_analyst.render_finding_md(finding))
+
+
+def _catalog_deprecations(catalog, today=None, fetch_json=None):
+    """DEPRECATION findings for the catalog's npm and PyPI packages (C4).
+
+    Package-level flags only: the catalog names packages, not the versions
+    you run (``openpulse deprecation --version`` checks one release). A
+    package that cannot be checked contributes nothing and is reported.
+    """
+    from core.registry_deprecation import CHECKED
+    from core.registry_deprecation import check as deprecation_check
+
+    findings = []
+    for entry in catalog:
+        for package in entry.get("packages") or []:
+            if str(package.get("ecosystem")) not in ("npm", "PyPI"):
+                continue
+            result = deprecation_check(
+                package["ecosystem"], str(package.get("name")), fetch_json=fetch_json
+            )
+            if result["status"] != CHECKED:
+                _echo(f"deprecation not checked for {result['purl']}: {result['reason']}")
+                continue
+            findings += change_analyst.analyze_deprecations(result, today=today)
+    return findings
+
+
+@cli.command("deprecation")
+@click.option(
+    "--ecosystem", required=True, type=click.Choice(["npm", "PyPI"], case_sensitive=False)
+)
+@click.option("--package", "name", required=True, help="Package name, as the registry spells it")
+@click.option(
+    "--version",
+    "version",
+    default=None,
+    help="Your version: also check whether this release is deprecated (npm) or yanked (PyPI)",
+)
+def deprecation(ecosystem, name, version):
+    """Read the publisher's deprecation and withdrawal flags (v0.20.0 C4).
+
+    npm's ``deprecated``, PyPI's yanked releases (PEP 592) and the
+    "Development Status :: 7 - Inactive" classifier. A flag is a finding to
+    review, never a verdict.
+    """
+    from core.registry_deprecation import CHECKED
+    from core.registry_deprecation import check as deprecation_check
+
+    result = deprecation_check(ecosystem, name, version)
+    if result["status"] != CHECKED:
+        _echo(f"not checked: {result['reason']}")
+        raise SystemExit(1)
+    findings = change_analyst.analyze_deprecations(result)
+    if not findings:
+        scope = f"{result['purl']} or release {version}" if version else result["purl"]
+        _echo(f"no deprecation or withdrawal flag on {scope} (latest {result['latest']}).")
+        return
+    for finding in findings:
+        _echo("\n" + report_analyst.render_finding_md(finding))
+
+
+def _observe_catalog_repositories(
+    catalog, store, history_key, previous_keys, fetch_json=None
+):
     """Observe each catalog entry's GitHub repository; findings from its changes (C2).
 
     Failures (a rate limit, a refused history) are reported and skipped: a
@@ -1414,7 +1565,7 @@ def _observe_catalog_repositories(catalog, store, history_key, previous_keys):
     from core.observations.repository import observe_github_repository
 
     token = _os.environ.get("GITHUB_TOKEN") or _os.environ.get("GH_TOKEN")
-    changes = []
+    findings = []
     for entry in catalog:
         repo = entry.get("github")
         if not repo:
@@ -1426,8 +1577,32 @@ def _observe_catalog_repositories(catalog, store, history_key, previous_keys):
         if result["error"] is not None:
             _echo(f"repository history skipped for {repo}: {result['error'].get('safe_message')}")
             continue
-        changes += result["changes"]
-    return change_analyst.analyze_repository_changes(changes)
+        found = change_analyst.analyze_repository_changes(result["changes"])
+        if any(f["event_type"] == "LICENSE_CHANGE" for f in found):
+            # GitHub's license id is a heuristic: ask the registry (C5).
+            registry = _registry_licenses(entry, fetch_json=fetch_json)
+            found = [
+                change_analyst.corroborate_repository_license(f, registry) for f in found
+            ]
+        findings += found
+    return findings
+
+
+def _registry_licenses(entry, fetch_json=None):
+    """{"purl", "license"} the registry declares for each npm/PyPI package's latest release."""
+    from core.release_license import check as release_license_check
+
+    declared = []
+    for package in entry.get("packages") or []:
+        if str(package.get("ecosystem")) not in ("npm", "PyPI"):
+            continue
+        result = release_license_check(
+            package["ecosystem"], str(package.get("name")), fetch_json=fetch_json
+        )
+        latest = result.get("latest") or {}
+        if result["status"] == "COMPARED" and latest.get("license"):
+            declared.append({"purl": result["purl"], "license": latest["license"]})
+    return declared
 
 
 @cli.command("observe-github")
@@ -1436,7 +1611,7 @@ def _observe_catalog_repositories(catalog, store, history_key, previous_keys):
     "--store",
     default=".openpulse/observations",
     help="History root directory (shared with `observe`)",
-    callback=_untracked,
+    callback=_store_root,
 )
 @click.option(
     "--rebaseline",
@@ -1553,15 +1728,16 @@ def observe_github(
     "--with-sweep",
     is_flag=True,
     help=(
-        "Run the live distribution sweep and observe the projects' GitHub repositories "
-        "first, and include their findings"
+        "Run the live distribution sweep, observe the projects' GitHub repositories and "
+        "compare their packages' release licenses and deprecation flags first, and include "
+        "their findings"
     ),
 )
 @click.option(
     "--store",
     default=".openpulse/observations",
     help="History root for --with-sweep",
-    callback=_untracked,
+    callback=_store_root,
 )
 @click.option(
     "--ledger",
@@ -1652,6 +1828,12 @@ def report(
         # The history restates the snapshot's "archived"/"moved" with more evidence.
         items = change_analyst.replace_snapshot_duplicates(items, repository_findings)
         sweep_findings += repository_findings
+        release_license_findings = _catalog_release_licenses(selected)
+        _echo(f"release license findings: {len(release_license_findings)}")
+        sweep_findings += release_license_findings
+        deprecation_findings = _catalog_deprecations(selected)
+        _echo(f"deprecation findings: {len(deprecation_findings)}")
+        sweep_findings += deprecation_findings
     notes = [
         "Collectors: endoflife.date, GitHub releases + repo metadata, NVD, CISA KEV, Docker Hub.",
         "GitHub calls authenticated (5000 req/hr budget)."
@@ -3348,7 +3530,7 @@ def attest(
     "--store",
     default=".openpulse/observations",
     help="History root directory",
-    callback=_untracked,
+    callback=_store_root,
 )
 @click.option(
     "--projects", default="", help="Comma-separated slugs (default: every image in the catalog)"

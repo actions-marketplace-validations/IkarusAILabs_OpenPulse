@@ -509,6 +509,8 @@ def analyze_repository_changes(
                 "significance": significance,
                 "detection_method": DETECTION_REPOSITORY_HISTORY,
                 "evidence_strength": EVIDENCE_MODERATE,
+                "confidence": "EMERGING",
+                "evidence_basis": BASIS_OBSERVED_DIFFERENCE,
                 "observed_at": str(today),
                 "first_detected_at": c.get("first_detected_at"),
                 "effective_at": observed,
@@ -539,7 +541,7 @@ def analyze_repository_changes(
                 "supporting": [c],
             }
         )
-    return findings
+    return [with_support(f) for f in findings]
 
 
 def _artifact_refs(finding: dict[str, Any]) -> set[str]:
@@ -580,6 +582,337 @@ def replace_snapshot_duplicates(
         ]
         kept.append({**item, "findings": findings})
     return kept
+
+
+#: How a release-license finding was detected: the licenses a package
+#: registry records for two releases (v0.20.0 C3).
+DETECTION_RELEASE_METADATA = "registry_release_metadata"
+
+_REGISTRY_PAGES = {
+    "npm": "https://www.npmjs.com/package/{name}/v/{version}",
+    "PyPI": "https://pypi.org/project/{name}/{version}/",
+}
+
+
+def analyze_release_license_changes(
+    result: dict[str, Any], today: date | None = None
+) -> list[dict[str, Any]]:
+    """Release license transitions (``core.release_license.check``) -> findings.
+
+    One LICENSE_CHANGE per transition, placed for review. ``effective_at`` is
+    the publish time of the release that carries the new license. When the
+    releases between the two compared were not read (PyPI), the finding says
+    the change happened somewhere after the earlier one, at the latest by the
+    later one. Nothing is found for a check that was not performed.
+    """
+    today = today or date.today()
+    if not isinstance(result, dict) or result.get("status") != "COMPARED":
+        return []
+    eco, name, purl = result.get("ecosystem"), result.get("name"), result.get("purl")
+    findings = []
+    for t in result.get("transitions") or []:
+        before, after = t.get("from_license"), t.get("to_license")
+        old, new = t.get("from_version"), t.get("to_version")
+        if t.get("between_compared"):
+            title = f"{name} ({eco}) changed its license from {before} to {after} in {new}"
+            when = (
+                f"Release {new} is the first, by version, to carry {after}; "
+                f"{old} carried {before}."
+            )
+        else:
+            title = f"{name} ({eco}) changed its license from {before} to {after} by {new}"
+            when = (
+                f"{old} carried {before} and {new} carries {after}; the releases in between "
+                f"were not compared, so the change is somewhere after {old}, at the latest in "
+                f"{new}."
+            )
+        page = _REGISTRY_PAGES.get(str(eco), "").format(name=name, version=new)
+        findings.append(
+            {
+                "analyst": "change",
+                "event_type": "LICENSE_CHANGE",
+                "signal": "license",
+                "title": title,
+                "summary": f"{when} This is the license the publisher declared to the "
+                "registry; check the project's own announcement and the license file of the "
+                "release you use before relying on it.",
+                "impact": "REVIEW",
+                "significance": "high",
+                "detection_method": DETECTION_RELEASE_METADATA,
+                "evidence_strength": EVIDENCE_MODERATE,
+                "confidence": "EMERGING",
+                "evidence_basis": BASIS_OBSERVED_DIFFERENCE,
+                "observed_at": str(today),
+                "first_detected_at": None,
+                "effective_at": t.get("published"),
+                "lifecycle_state": STATE_EFFECTIVE,
+                "scope": {"kind": "package", "packages": [purl], "versions": []},
+                "affected_versions": ["*"],
+                "affected_artifacts": [{"kind": "package", "ref": purl}],
+                "references": [page] if page else [],
+                "registry_evidence": {
+                    "source": "registry.npmjs.org" if eco == "npm" else "pypi.org",
+                    "package": purl,
+                    "from_version": old,
+                    "to_version": new,
+                    "from_license": before,
+                    "to_license": after,
+                    "published": t.get("published"),
+                    "between_compared": bool(t.get("between_compared")),
+                    "releases_compared": result.get("releases_compared"),
+                },
+                "supporting": [t],
+            }
+        )
+    return [with_support(f) for f in findings]
+
+
+#: How a deprecation finding was detected: a flag the publisher set on the
+#: package registry (v0.20.0 C4).
+DETECTION_REGISTRY_FLAG = "registry_publisher_flag"
+
+_DEPRECATION_PAGES = {
+    "npm": "https://www.npmjs.com/package/{name}/v/{version}",
+    "PyPI": "https://pypi.org/project/{name}/{version}/",
+}
+
+
+def analyze_deprecations(result: dict[str, Any], today: date | None = None) -> list[dict[str, Any]]:
+    """Publisher flags (``core.registry_deprecation.check``) -> DEPRECATION findings.
+
+    One finding per flag, placed for review. A package-level flag (npm's
+    ``latest`` deprecated, a PyPI project declaring itself inactive, or
+    every release yanked) covers every version; a version-level flag
+    covers only the release you named. The registry records no date for
+    a flag, so ``effective_at`` is left empty: OpenPulse knows when it saw
+    the flag, not when it was set. Nothing is found for a check that was
+    not performed.
+    """
+    from core import registry_deprecation as rd
+
+    today = today or date.today()
+    if not isinstance(result, dict) or result.get("status") != rd.CHECKED:
+        return []
+    eco, name, purl = result.get("ecosystem"), result.get("name"), result.get("purl")
+    findings = []
+    for flag in result.get("flags") or []:
+        kind, level, version, text = (
+            flag.get("kind"),
+            flag.get("level"),
+            flag.get("version"),
+            flag.get("message"),
+        )
+        package_wide = level == rd.PACKAGE
+        quoted = f" The publisher's message: \"{text}\"" if text else ""
+        if kind == rd.NPM_DEPRECATED:
+            subject = f"{name} (npm)" if package_wide else f"{name} {version} (npm)"
+            title = f"{subject} is deprecated by its publisher"
+            what = (
+                f"The release npm installs by default ({version}) carries the publisher's "
+                "deprecation, so npm warns on every install."
+                if package_wide
+                else f"Release {version} carries the publisher's deprecation; the latest "
+                f"release ({result.get('latest')}) does not."
+            )
+            strength = EVIDENCE_STRONG
+        elif kind == rd.PYPI_YANKED:
+            title = f"{name} {version} (PyPI) was yanked by its publisher"
+            what = (
+                f"Every release of {name} is yanked, the latest ({version}) included."
+                if package_wide
+                else f"Release {version} is yanked (PEP 592): installers skip it unless it "
+                f"is pinned exactly. The latest release is {result.get('latest')}."
+            )
+            strength = EVIDENCE_STRONG
+        elif kind == rd.PYPI_INACTIVE:
+            title = f"{name} (PyPI) declares itself inactive"
+            what = (
+                f"The latest release ({version}) carries the classifier "
+                f"\"{rd.INACTIVE_CLASSIFIER}\": the publisher says the project is no "
+                "longer developed."
+            )
+            # A classifier describes the release it was published with; it is
+            # the publisher's statement, but not one kept up to date.
+            strength = EVIDENCE_MODERATE
+        else:
+            continue
+        versions = [] if package_wide else [version]
+        page = _DEPRECATION_PAGES.get(str(eco), "").format(name=name, version=version)
+        findings.append(
+            {
+                "analyst": "change",
+                "event_type": "DEPRECATION",
+                "signal": "lifecycle",
+                "title": title,
+                "summary": f"{what}{quoted} This is what the publisher declared on the "
+                "registry; check the project's own announcement for the reason and any "
+                "replacement before acting on it.",
+                "impact": "REVIEW",
+                "significance": "high" if package_wide else "medium",
+                "detection_method": DETECTION_REGISTRY_FLAG,
+                "evidence_strength": strength,
+                "confidence": "CONFIRMED" if strength == EVIDENCE_STRONG else "EMERGING",
+                "evidence_basis": BASIS_PUBLISHER_STATEMENT,
+                "observed_at": str(today),
+                "first_detected_at": None,
+                "effective_at": None,
+                "lifecycle_state": STATE_EFFECTIVE,
+                "scope": {"kind": "package", "packages": [purl], "versions": versions},
+                "affected_versions": versions or ["*"],
+                "affected_artifacts": [{"kind": "package", "ref": purl}],
+                "references": [page] if page else [],
+                "registry_evidence": {
+                    "source": "registry.npmjs.org" if eco == "npm" else "pypi.org",
+                    "package": purl,
+                    "flag": kind,
+                    "level": level,
+                    "version": version,
+                    "latest": result.get("latest"),
+                    "message": text,
+                },
+                "supporting": [flag],
+            }
+        )
+    return [with_support(f) for f in findings]
+
+
+# --- Verified cases before support is claimed (v0.20.0 C6) ------------------------------
+
+#: Each Phase 14 detection class and the verified, replayable cases in
+#: docs/DISCOVERIES.md that back it. A class with none ships as
+#: experimental and its findings say so; ``tests/test_discoveries.py``
+#: replays every case named here.
+VERIFIED_CASES: dict[str, tuple[str, ...]] = {
+    "repository_history": (),
+    "release_license:npm": ("Case 11",),
+    "release_license:PyPI": ("Case 12",),
+    "npm_deprecated": ("Case 13", "Case 14"),
+    "pypi_yanked": ("Case 15",),
+    "pypi_inactive": ("Case 16",),
+}
+
+SUPPORT_VERIFIED = "verified"
+SUPPORT_EXPERIMENTAL = "experimental"
+
+
+def support_class(finding: dict[str, Any]) -> str | None:
+    """The Phase 14 detection class of one finding, or None for any other finding."""
+    method = finding.get("detection_method")
+    if method == DETECTION_REPOSITORY_HISTORY:
+        return "repository_history"
+    evidence = finding.get("registry_evidence") or {}
+    if method == DETECTION_RELEASE_METADATA:
+        npm = evidence.get("source") == "registry.npmjs.org"
+        return "release_license:" + ("npm" if npm else "PyPI")
+    if method == DETECTION_REGISTRY_FLAG:
+        return str(evidence.get("flag"))
+    return None
+
+
+def with_support(finding: dict[str, Any]) -> dict[str, Any]:
+    """The finding with its support status: verified by named cases, or experimental."""
+    cls = support_class(finding)
+    if cls is None:
+        return finding
+    cases = list(VERIFIED_CASES.get(cls, ()))
+    result = dict(finding, support=SUPPORT_VERIFIED if cases else SUPPORT_EXPERIMENTAL)
+    result["verified_cases"] = cases
+    if not cases:
+        result["summary"] = (
+            f"{finding.get('summary', '')} Experimental: no verified case of this detection "
+            "yet (docs/DISCOVERIES.md)."
+        )
+    return result
+
+
+# --- Evidence rules for change evidence beyond lifecycle (v0.20.0 C5) -----------------
+#
+# What a finding's confidence rests on, stated on the finding itself:
+#
+# - a difference OpenPulse observed (two repository observations, or two
+#   releases' declared licenses) is one credible source: EMERGING;
+# - a flag the publisher set on the registry (npm ``deprecated``, a PyPI
+#   yank) is the publisher's own statement about its package: CONFIRMED;
+#   a classifier describes the release it shipped with and is rarely kept
+#   up to date, so it stays EMERGING;
+# - GitHub's license id is a heuristic over the license file: a license
+#   change it reports is CORROBORATED only when the registry's license for
+#   one of the project's packages agrees with the new license
+#   (``corroborate_repository_license``).
+
+#: Basis of a finding's confidence.
+BASIS_OBSERVED_DIFFERENCE = "observed_difference"
+BASIS_PUBLISHER_STATEMENT = "publisher_statement"
+
+_LICENSE_SUFFIXES = ("-only", " license")
+
+
+def same_license(a: Any, b: Any) -> bool:
+    """Two license values that name the same license, compared conservatively.
+
+    Case, spacing, outer parentheses, an SPDX ``-only`` suffix and a trailing
+    "License" are ignored; nothing else is (``Apache-2.0`` and "Apache
+    Software License" do not agree).
+    """
+
+    def norm(value: Any) -> str:
+        text = " ".join(str(value or "").casefold().split())
+        if text.startswith("(") and text.endswith(")") and text.count("(") == 1:
+            text = text[1:-1].strip()
+        for suffix in _LICENSE_SUFFIXES:
+            if text.endswith(suffix):
+                text = text[: -len(suffix)].strip()
+        return text
+
+    left, right = norm(a), norm(b)
+    return bool(left) and left == right
+
+
+def corroborate_repository_license(
+    finding: dict[str, Any], registry_licenses: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """A GitHub license change, checked against the registry's licenses (C5).
+
+    ``registry_licenses``: ``{"purl", "license"}`` for the project's packages,
+    the license the registry declares for the latest release. Agreement with
+    the new license makes the finding CORROBORATED (two independent sources:
+    the repository's license file and the publisher's declaration). Anything
+    else leaves it EMERGING and says what the registry declares: a registry
+    lagging behind until the next release is normal, not a contradiction.
+    Other findings are returned unchanged.
+    """
+    if (
+        finding.get("event_type") != "LICENSE_CHANGE"
+        or finding.get("detection_method") != DETECTION_REPOSITORY_HISTORY
+    ):
+        return finding
+    new = ((finding.get("observation_evidence") or {}).get("fact") or {}).get("current")
+    declared = [
+        {"purl": r.get("purl"), "license": r.get("license")}
+        for r in registry_licenses or []
+        if isinstance(r, dict) and r.get("license")
+    ]
+    agreeing = [r for r in declared if same_license(r["license"], new)]
+    result = dict(finding)
+    result["registry_agreement"] = {
+        "license": new,
+        "agreeing": agreeing,
+        "declared": declared,
+    }
+    if agreeing:
+        result["confidence"] = "CORROBORATED"
+        result["evidence_strength"] = EVIDENCE_STRONG
+        names = ", ".join(str(r["purl"]) for r in agreeing)
+        result["summary"] = (
+            f"{finding.get('summary', '')} The registry agrees: {names} declares {new}."
+        )
+    elif declared:
+        found = "; ".join(f"{r['purl']} declares {r['license']}" for r in declared)
+        result["summary"] = (
+            f"{finding.get('summary', '')} The registry does not agree yet ({found}): "
+            "GitHub's license detection alone is a heuristic."
+        )
+    return result
 
 
 #: Diff type -> (event_type, impact, significance, template).
