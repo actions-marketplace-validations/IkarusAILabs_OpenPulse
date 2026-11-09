@@ -1402,6 +1402,142 @@ def observe(
         _echo("\n" + report_analyst.render_finding_md(finding))
 
 
+def _observe_catalog_repositories(catalog, store, history_key, previous_keys):
+    """Observe each catalog entry's GitHub repository; findings from its changes (C2).
+
+    Failures (a rate limit, a refused history) are reported and skipped: a
+    repository that cannot be observed this run contributes nothing.
+    """
+    import os as _os
+
+    from collectors.github.collector import GitHubCollector
+    from core.observations.repository import observe_github_repository
+
+    token = _os.environ.get("GITHUB_TOKEN") or _os.environ.get("GH_TOKEN")
+    changes = []
+    for entry in catalog:
+        repo = entry.get("github")
+        if not repo:
+            continue
+        meta = GitHubCollector({repo: repo}, token=token).fetch_repo_meta(repo)
+        result = observe_github_repository(
+            repo, meta, store_root=store, history_key=history_key, previous_keys=previous_keys
+        )
+        if result["error"] is not None:
+            _echo(f"repository history skipped for {repo}: {result['error'].get('safe_message')}")
+            continue
+        changes += result["changes"]
+    return change_analyst.analyze_repository_changes(changes)
+
+
+@cli.command("observe-github")
+@click.option("--repo", "repo", required=True, help="GitHub repository, owner/name")
+@click.option(
+    "--store",
+    default=".openpulse/observations",
+    help="History root directory (shared with `observe`)",
+    callback=_untracked,
+)
+@click.option(
+    "--rebaseline",
+    is_flag=True,
+    help=(
+        "Accept a refused history (ROLLBACK, ROLLBACK_SUSPECTED, DOWNGRADE, BROKEN): "
+        "a rollback is accepted at its current tip, anything else is quarantined "
+        "and restarted. Needs --reason"
+    ),
+)
+@click.option("--reason", default="", help="Why the re-baseline is justified (logged)")
+@click.option(
+    "--github-token-file",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Read a GitHub token from PATH (else GITHUB_TOKEN or GH_TOKEN)",
+)
+@_history_key_option
+def observe_github(
+    repo,
+    store,
+    rebaseline=False,
+    reason="",
+    github_token_file=None,
+    history_key_file=None,
+    history_previous_keys_file=None,
+):
+    """Record a GitHub repository's facts in its verifiable history and report changes.
+
+    Stores the license, archived flag, the path GitHub answers with, the
+    default branch and the last push, hash-chained beside `observe`'s
+    registry histories (v0.20.0 C1). A 404 is recorded as missing; any other
+    failure records nothing. Compared with the previous record, a license
+    change, an archive and a move to a new owner are findings (C2).
+    """
+    from collectors.github.collector import GitHubCollector
+    from core.observations.repository import observe_github_repository, split_repo
+    from core.observations.sweep import validate_rebaseline_reason
+
+    try:
+        split_repo(repo)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--repo") from exc
+    if reason and not rebaseline:
+        raise click.ClickException("--reason is only used with --rebaseline")
+    if rebaseline:
+        try:
+            reason = validate_rebaseline_reason(reason)
+        except ValueError as exc:
+            raise click.ClickException(f"--rebaseline needs --reason: {exc}") from exc
+    history_key, previous_keys = _load_history_key(
+        history_key_file, history_previous_keys_file, store
+    )
+    token = _resolve_github_token(repo, "", github_token_file)
+    meta = GitHubCollector({repo: repo}, token=token).fetch_repo_meta(repo)
+    result = observe_github_repository(
+        repo,
+        meta,
+        store_root=store,
+        history_key=history_key,
+        previous_keys=previous_keys,
+        rebaseline_reason=reason if rebaseline else None,
+    )
+    if result["error"] is not None:
+        _echo(
+            f"error: {result['error'].get('safe_message')} "
+            f"(category={result['error'].get('category')})"
+        )
+        raise SystemExit(1)
+    record = result["observation"]
+    _echo(f"saved: {result['saved_path']}")
+    _echo(f"history integrity: {result.get('history_integrity')}")
+    if record.get("missing"):
+        _echo(f"{repo}: not found (404: deleted, or not visible to this token)")
+    else:
+        _echo(
+            f"{repo}: answered as {record.get('full_name')}, "
+            f"license {record.get('license') or 'none detected'}, "
+            f"archived {str(record.get('archived')).lower()}"
+        )
+    if result["history_status"] == "REBASELINED":
+        _echo("re-baselined: no comparison with earlier records this run.")
+        return
+    if result["history_status"] == "GENESIS":
+        _echo("baseline recorded: no previous observation to compare with.")
+        return
+    if not result["changes"]:
+        _echo("no changes since the last observation.")
+        return
+    for change in result["changes"]:
+        detail = (
+            f": {change.get('previous')} -> {change.get('current')}"
+            if change.get("previous") or change.get("current")
+            else ""
+        )
+        first = change.get("first_detected_at") or "not proven (history is not keyed)"
+        _echo(f"- {change['type']}{detail} (first detected: {first})")
+    for finding in change_analyst.analyze_repository_changes(result["changes"]):
+        _echo("\n" + report_analyst.render_finding_md(finding))
+
+
 @cli.command()
 @click.option("--month", required=True, help="Report month, e.g. 2026-09")
 @click.option("--projects", default="", help="Comma-separated slugs (default: whole catalog)")
@@ -1416,7 +1552,10 @@ def observe(
 @click.option(
     "--with-sweep",
     is_flag=True,
-    help="Run live distribution sweep first and include its findings",
+    help=(
+        "Run the live distribution sweep and observe the projects' GitHub repositories "
+        "first, and include their findings"
+    ),
 )
 @click.option(
     "--store",
@@ -1506,6 +1645,13 @@ def report(
             previous_keys=previous_keys,
         )["findings"]
         _echo(f"sweep findings: {len(sweep_findings)}")
+        repository_findings = _observe_catalog_repositories(
+            selected, store, history_key, previous_keys
+        )
+        _echo(f"repository history findings: {len(repository_findings)}")
+        # The history restates the snapshot's "archived"/"moved" with more evidence.
+        items = change_analyst.replace_snapshot_duplicates(items, repository_findings)
+        sweep_findings += repository_findings
     notes = [
         "Collectors: endoflife.date, GitHub releases + repo metadata, NVD, CISA KEV, Docker Hub.",
         "GitHub calls authenticated (5000 req/hr budget)."
