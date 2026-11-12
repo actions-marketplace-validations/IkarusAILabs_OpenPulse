@@ -49,7 +49,7 @@ What makes the evidence usable:
 **For AI coding agents.** `openpulse mcp` is an [MCP](https://modelcontextprotocol.io) server, so Claude Code, Cursor, Copilot and other clients can ask before they change a dependency:
 
 ```bash
-pip install "ikarus-openpulse[mcp] @ git+https://github.com/IkarusAILabs/OpenPulse@v0.20.0"
+pip install "ikarus-openpulse[mcp] @ git+https://github.com/IkarusAILabs/OpenPulse@v0.21.0"
 claude mcp add openpulse -- openpulse mcp      # Claude Code
 ```
 
@@ -83,7 +83,7 @@ openpulse gate requirements.txt poetry.lock --base-ref origin/main   # CI, befor
 
 Only dependencies added or changed since the ref are checked; the blocklist covers everything. Exit 0 passes, 1 is a violation, 2 is a usage error or a file it cannot read. A prohibited check that could not run fails the gate unless the policy says `unchecked: pass`. The same gate runs as a pre-commit hook (add the `openpulse-gate` hook from this repository to your `.pre-commit-config.yaml`) and as the GitHub Action's `gate` input, which reads the policy from the base branch so a pull request cannot weaken its own gate. Conditions, labels and bypass routes: [docs/TRUST_POLICY.md](docs/TRUST_POLICY.md).
 
-**In GitHub Actions.** Run OpenPulse on every pull request that touches a dependency file, and weekly to catch upstream changes no pull request triggered. You get a job summary, SARIF for Code Scanning and evidence contracts. Pin the action to a full commit SHA:
+**In GitHub Actions.** Run OpenPulse on every pull request that touches a dependency file, and on a schedule to catch upstream changes no pull request triggered ([a scheduled watch](docs/GITHUB_ACTION.md#example-a-scheduled-watch-catches-upstream-changes-with-no-pr) tells you once about each). You get a job summary, SARIF for Code Scanning and evidence contracts. Pin the action to a full commit SHA:
 
 ```yaml
 permissions:
@@ -91,7 +91,7 @@ permissions:
 steps:
   - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     with: {persist-credentials: false}
-  - uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.20.0
+  - uses: IkarusAILabs/OpenPulse@<full-commit-sha> # v0.21.0
     with:
       manifest: requirements.txt
       fail-on: action        # fail only on ACTION/CRITICAL upstream findings
@@ -203,6 +203,15 @@ The full list, including what an attacker with write access to local history can
 - **Quality:** more than 2,100 offline tests (count reported by CI), `ruff` clean, CI on Linux and Windows with CodeQL, pip-audit, a lock-drift check, a deterministic SBOM and a secret tripwire. Every install is hash-checked against complete locks.
 
 ## What's new
+
+**v0.21.0 "Your Dependencies, Watched":** the change checks for your own dependencies, on a schedule, told once.
+
+- **Your own dependencies:** `--registry-changes` on `check` and `attest` (and the Action's `registry-changes: all`) reports a deprecated or yanked release, an Inactive project and a license change for each npm and PyPI dependency in your files.
+- **Their repositories:** `--observe-repositories` records the GitHub repository each dependency names and reports a license change, an archive or a move to a new owner between two runs.
+- **History between runs:** the Action's `history: on` keeps the keyed history in the Actions cache and audits it before use (`openpulse history-audit`); a broken, rolled-back or foreign history is refused.
+- **Only what is new:** a run says which detections it had not seen (`check --new-only`, the job summary, the `new-findings` outputs). A first run is the starting point.
+- **Delivery:** `openpulse deliver-new`, `notify-webhook` and `notify-issue` send the new findings to a signed webhook or one issue, once.
+- **More lockfiles:** `composer.lock` and NuGet `packages.lock.json` are read.
 
 **v0.20.0 "Change Evidence Beyond Lifecycle":** changes that are not end-of-life dates, each with the evidence it rests on.
 
@@ -384,7 +393,11 @@ Thank you to everyone moving OpenPulse forward:
 
 - **[@wufangyong973](https://github.com/wufangyong973)** — grew the canonical project catalog toward OpenPulse 100 (Airflow, Spark, MinIO, Celery, ZooKeeper) in [#11](https://github.com/IkarusAILabs/OpenPulse/pull/11). First of many.
 - **[@DYNOSuprovo](https://github.com/DYNOSuprovo)** — ASCII-marker fallback for `openpulse check` on non-UTF-8 consoles in [#14](https://github.com/IkarusAILabs/OpenPulse/pull/14) (merged via [#17](https://github.com/IkarusAILabs/OpenPulse/pull/17)).
-- **[@choksi2212](https://github.com/choksi2212)** — six good-first-issue contributions: Unicode fallback for every CLI command ([#21](https://github.com/IkarusAILabs/OpenPulse/pull/21)), OSV live wiring ([#22](https://github.com/IkarusAILabs/OpenPulse/pull/22)), catalog identity metadata for forks/renames/ecosystem mappings ([#23](https://github.com/IkarusAILabs/OpenPulse/pull/23)), intelligence-semantics documentation ([#24](https://github.com/IkarusAILabs/OpenPulse/pull/24)), SBOM artifact upload ([#25](https://github.com/IkarusAILabs/OpenPulse/pull/25)), and the Windows CI runner ([#26](https://github.com/IkarusAILabs/OpenPulse/pull/26)).
+- **[@choksi2212](https://github.com/choksi2212)** — 28 merged pull requests. The first six: Unicode fallback for every CLI command ([#21](https://github.com/IkarusAILabs/OpenPulse/pull/21)), OSV live wiring ([#22](https://github.com/IkarusAILabs/OpenPulse/pull/22)), catalog identity metadata for forks/renames/ecosystem mappings ([#23](https://github.com/IkarusAILabs/OpenPulse/pull/23)), intelligence-semantics documentation ([#24](https://github.com/IkarusAILabs/OpenPulse/pull/24)), SBOM artifact upload ([#25](https://github.com/IkarusAILabs/OpenPulse/pull/25)), and the Windows CI runner ([#26](https://github.com/IkarusAILabs/OpenPulse/pull/26)). Then much of the early core: the SBOM, SPDX, lockfile, manifest and image-inventory readers ([#43](https://github.com/IkarusAILabs/OpenPulse/pull/43), [#56](https://github.com/IkarusAILabs/OpenPulse/pull/56), [#58](https://github.com/IkarusAILabs/OpenPulse/pull/58), [#59](https://github.com/IkarusAILabs/OpenPulse/pull/59), [#69](https://github.com/IkarusAILabs/OpenPulse/pull/69)), the detection ledger ([#44](https://github.com/IkarusAILabs/OpenPulse/pull/44)), the evidence contract's first schema and v1 ([#60](https://github.com/IkarusAILabs/OpenPulse/pull/60), [#70](https://github.com/IkarusAILabs/OpenPulse/pull/70)), the alert digest and the warning deadline engine ([#71](https://github.com/IkarusAILabs/OpenPulse/pull/71), [#73](https://github.com/IkarusAILabs/OpenPulse/pull/73)), registry tag fixes ([#35](https://github.com/IkarusAILabs/OpenPulse/pull/35), [#38](https://github.com/IkarusAILabs/OpenPulse/pull/38)), version scopes bound to the event's project ([#42](https://github.com/IkarusAILabs/OpenPulse/pull/42)), and the golden EOL and ownership-move scenarios ([#54](https://github.com/IkarusAILabs/OpenPulse/pull/54), [#55](https://github.com/IkarusAILabs/OpenPulse/pull/55), [#68](https://github.com/IkarusAILabs/OpenPulse/pull/68), [#72](https://github.com/IkarusAILabs/OpenPulse/pull/72), [#84](https://github.com/IkarusAILabs/OpenPulse/pull/84), [#85](https://github.com/IkarusAILabs/OpenPulse/pull/85)).
+- **[@arin30](https://github.com/arin30)** — GitHub tokens kept out of process arguments ([#122](https://github.com/IkarusAILabs/OpenPulse/pull/122)), Poetry locks read as Poetry writes them ([#319](https://github.com/IkarusAILabs/OpenPulse/pull/319)), and npm aliases checked under their registry name ([#320](https://github.com/IkarusAILabs/OpenPulse/pull/320)).
+- **[@chiragjangiir](https://github.com/chiragjangiir)** — `python -m cli` for MCP clients ([#146](https://github.com/IkarusAILabs/OpenPulse/pull/146)), a valid deterministic CycloneDX `serialNumber` ([#147](https://github.com/IkarusAILabs/OpenPulse/pull/147)), one shared decorator for the GitHub token options ([#149](https://github.com/IkarusAILabs/OpenPulse/pull/149)), and the Composer and NuGet lockfile readers ([#343](https://github.com/IkarusAILabs/OpenPulse/pull/343)).
+- **[@Tejas5405](https://github.com/Tejas5405)** — the shared parser cap for repository blobs ([#148](https://github.com/IkarusAILabs/OpenPulse/pull/148), completed in [#220](https://github.com/IkarusAILabs/OpenPulse/pull/220)).
+- **[@SatriaBagusNurhadianto](https://github.com/SatriaBagusNurhadianto)** — catalog alias and Docker-image collisions fail loudly ([#151](https://github.com/IkarusAILabs/OpenPulse/pull/151), completed in [#219](https://github.com/IkarusAILabs/OpenPulse/pull/219)).
 
 ## License
 
